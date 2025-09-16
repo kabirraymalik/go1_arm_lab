@@ -3,12 +3,16 @@
 ## 📦 Installation
 
 1. Follow the [official guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html) to install IsaacLab v2.2.1.  
-2. Clone this repositor:
+2. Clone this repository:
    ```
    git clone https://github.com/kabirraymalik/go1_arm_lab.git
    ```
 3. Install the package using the Python interpreter that IsaacLab uses:
    ```
+   # In your IsaacLab environment
+   conda activate your_isaaclab_env
+   
+   # install project as package
    python -m pip install -e source/go1_arm_lab
    ```
 
@@ -16,7 +20,7 @@
 
 #### Training
 
-Run reinforcement-learning training in headless mode for higher efficiency:
+Run reinforcement-learning training with --headless for efficiency:
 
 ```
 # Activate IsaacLab environment
@@ -38,7 +42,7 @@ Deploy a trained policy in a single environment:
 # Activate IsaacLab environment
 conda activate your_isaaclab_env
 
-# Go to project root
+# Go to go1_arm_lab
 cd /path/to/go1_arm_lab
 
 # Run inference
@@ -48,4 +52,5 @@ python scripts/rsl_rl/play.py --task Isaac-widowgo1-rough-play --num_envs 1
 
 ## Acknowledgments
 This project was heavily structured and based off of [Go2Arm_Lab](https://github.com/zzzJie-Robot/Go2Arm_Lab)
+
 The RL algorithm implementation in this project references the [Deep-Whole-Body-Control](https://github.com/MarkFzp/Deep-Whole-Body-Control) project, for which we extend our sincere gratitude.
