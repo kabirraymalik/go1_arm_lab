@@ -6,7 +6,6 @@
 """Script to play a checkpoint if an RL agent from RSL-RL."""
 
 """Launch Isaac Sim Simulator first."""
-
 import argparse
 import sys
 
@@ -58,7 +57,7 @@ import os
 import time
 import torch
 
-from rsl_rl.runners import DistillationRunner, OnPolicyRunner
+from local_rsl_rl.runners import OnPolicyRunner
 
 from isaaclab.envs import (
     DirectMARLEnv,
@@ -71,24 +70,122 @@ from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
 
-from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx
+from isaaclab_rl.rsl_rl import export_policy_as_jit  # onnx not avaliable
+
+#TODO:
+from local_rsl_rl.wrappers import RslRlVecEnvWrapper
+from go1_arm_lab.tasks.manager_based.go1_arm_lab.config.agents import Go1ArmRslRlOnPolicyRunnerCfg
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
+import numpy as np
 
 import go1_arm_lab.tasks  # noqa: F401
 
 
+def prepare_obs(env):
+    """
+        Modify the order of observations containing historical information for easier network reading. Try to avoid modifications if possible!
+
+        Args:
+            env: The environment
+            agent_cfg: Agent configuration
+
+        Returns:
+            total(num_history, num_prop): Indices of the modified observation order
+            obs_new(num_envs, num_prop * num_history): Modified observation order indices corresponding to the observations
+        Notes:
+            Try to avoid modifications if possible!
+
+        Example:
+            In env.step, the original observation follows right-to-left order, after modification it becomes left-to-right
+
+            For example, the original observation is:
+                obs = ang_vel(3) * 10(num_history) + joint_pos(18) * 10(num_history) + joint_vel(18) * 10(num_history)
+            After env.step, the observation (obs) becomes structured as follows:
+                obs_old = ang_vel_timestep_10 -> ang_vel_timestep_1, joint_pos_timestep_10 -> joint_pos_timestep_1, joint_vel_timestep_10 -> joint_vel_timestep_1
+            We need to modify the observation order to:
+                obs_new = ang_vel_timestep_1, joint_pos_timestep_1, joint_vel_timestep_1 -> ang_vel_timestep_10, joint_pos_timestep_10, joint_vel_timestep_10
+    """
+    total = np.zeros((env.num_history, env.num_prop)) 
+    obs_new = torch.zeros(env.num_envs, env.num_prop * env.num_history).to(env.device)
+    
+    lst, length = env.get_obs_list_length()
+    lst = [item for item in lst if not item.startswith("policy-priv_")]
+
+    result_dict = {}
+    for i in range(len(lst)):
+        c = np.array(list(range( sum(length[: i + 1 ]) - int(length[i] / env.num_history), sum(length[: i + 1]) )))
+        result_dict[lst[i]] = c
+
+    key_list = list(result_dict.keys())
+    a1_list = []
+    for i in range(env.num_history):
+        for j in range(len(lst)):
+            a1 = np.concatenate([
+                result_dict[key_list[j]] - (i) * result_dict[key_list[j]].shape[0]])
+            a1_list.append(a1)
+            if j == len(lst) - 1:
+                a1_list = np.concatenate(a1_list)
+                total[i, :] = a1_list
+                a1_list = []
+    return total, obs_new
+
+def change_obs_order(obs, obs_new, total, env):
+
+    """
+        Modify the order of observations containing historical information for easier network reading. Try to avoid modifications if possible!
+
+        Args:
+            obs(num_envs, num_prop * num_history): The input to the actor and critic network
+            obs_new(num_envs, num_prop * num_history): Modified observation order indices corresponding to the observations
+            total(num_history, num_prop): Indices of the modified observation order
+            env: The environment
+            agent_cfg: Agent configuration
+
+        Returns:
+            obs(num_envs, num_prop * num_history): The input to the actor and critic network
+            obs_new(num_envs, num_prop * num_history): Modified observation order indices corresponding to the observations(need to reset)
+
+        Notes:
+            Try to avoid modifications if possible!
+
+        Example:
+            In env.step, the original observation follows right-to-left order, after modification it becomes left-to-right
+
+            For example, the original observation is:
+                obs = ang_vel(3) * 10(num_history) + joint_pos(18) * 10(num_history) + joint_vel(18) * 10(num_history)
+            After env.step, the observation (obs) becomes structured as follows:
+                obs_old = ang_vel_timestep_10 -> ang_vel_timestep_1, joint_pos_timestep_10 -> joint_pos_timestep_1, joint_vel_timestep_10 -> joint_vel_timestep_1
+            We need to modify the observation order to:
+                obs_new = ang_vel_timestep_1, joint_pos_timestep_1, joint_vel_timestep_1 -> ang_vel_timestep_10, joint_pos_timestep_10, joint_vel_timestep_10
+    """
+    for i in range(10):
+        obs_1 = obs[:, total[i, :]].to(env.device)
+        obs_new = torch.cat([obs_new, obs_1], dim = -1)
+
+    # only prop obs:    
+    obs = obs_new[:, env.num_prop  * env.num_history:] 
+    
+    # prop and priv obs:
+    # obs = torch.cat([obs_new[:, env.num_prop  * env.num_history :], 
+    #                  obs[:, env.num_prop  * env.num_history :]], dim=-1)  
+    
+    obs_new = torch.zeros(env.num_envs, env.num_prop * env.num_history).to(env.device)
+    return obs, obs_new
+
+
+
 @hydra_task_config(args_cli.task, args_cli.agent)
-def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
+def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: Go1ArmRslRlOnPolicyRunnerCfg):
     """Play with RSL-RL agent."""
     # grab task name for checkpoint path
     task_name = args_cli.task.split(":")[-1]
     train_task_name = task_name.replace("-Play", "")
 
     # override configurations with non-hydra CLI arguments
-    agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+    agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
 
     # set the environment seed
@@ -111,9 +208,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
     log_dir = os.path.dirname(resume_path)
-
-    # set the log directory for the environment (works for all environment types)
-    env_cfg.log_dir = log_dir
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -139,43 +233,36 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
-    if agent_cfg.class_name == "OnPolicyRunner":
-        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
-    elif agent_cfg.class_name == "DistillationRunner":
-        runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
-    else:
-        raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
-    runner.load(resume_path)
+    ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+    ppo_runner.load(resume_path)
 
     # obtain the trained policy for inference
-    policy = runner.get_inference_policy(device=env.unwrapped.device)
+    policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
 
     # extract the neural network module
     # we do this in a try-except to maintain backwards compatibility.
     try:
         # version 2.3 onwards
-        policy_nn = runner.alg.policy
+        policy_nn = ppo_runner.alg.policy
     except AttributeError:
         # version 2.2 and below
-        policy_nn = runner.alg.actor_critic
-
-    # extract the normalizer
-    if hasattr(policy_nn, "actor_obs_normalizer"):
-        normalizer = policy_nn.actor_obs_normalizer
-    elif hasattr(policy_nn, "student_obs_normalizer"):
-        normalizer = policy_nn.student_obs_normalizer
-    else:
-        normalizer = None
+        policy_nn = ppo_runner.alg.actor_critic
 
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
-    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+    export_policy_as_jit(policy_nn, ppo_runner.obs_normalizer, path=export_model_dir, filename="policy.pt")
+    
+    # onnx not avaliable
+    # export_policy_as_onnx(
+    #     policy_nn, normalizer=ppo_runner.obs_normalizer, path=export_model_dir, filename="policy.onnx"
+    # )
 
     dt = env.unwrapped.step_dt
 
     # reset environment
-    obs = env.get_observations()
+    obs, _ = env.get_observations()
+    total, obs_new = prepare_obs(env)
+    
     timestep = 0
     # simulate environment
     while simulation_app.is_running():
@@ -183,9 +270,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping
-            actions = policy(obs)
+            obs, obs_new = change_obs_order(obs, obs_new, total, env)
+
+            actions = policy(obs,hist_encoding=True) #no priv obs
             # env stepping
-            obs, _, _, _ = env.step(actions)
+            obs, _, _, _,_ = env.step(actions)
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video
