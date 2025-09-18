@@ -65,8 +65,8 @@ class Go1ArmFlatEnvCfg(LocomotionVelocityEnvCfg):
         self.rewards.action_rate_l2.weight = -0.01
         
         self.rewards.feet_air_time.weight = 0.0 #0.5
-        self.rewards.F_feet_air_time.weight = 1.0 #0.5
-        self.rewards.R_feet_air_time.weight = 1.0 #0.5
+        self.rewards.F_feet_air_time.weight = 0.5 #1.0
+        self.rewards.R_feet_air_time.weight = 0.5 #1.0
 
         self.rewards.feet_height.weight = -0.0 #TODO
         self.rewards.feet_height_body.weight = -3.0 #TODO
@@ -78,9 +78,9 @@ class Go1ArmFlatEnvCfg(LocomotionVelocityEnvCfg):
         self.rewards.flat_orientation_l2.weight = -1.0
 
         # new rewards added: 
-        self.rewards.feet_air_time_variance.weight = -1.0
+        self.rewards.feet_air_time_variance.weight = -2.0 #-1.0
         self.rewards.feet_air_time_variance.params["sensor_cfg"].body_names = [self.foot_link_name]
-        self.rewards.feet_gait.weight = 0.5
+        self.rewards.feet_gait.weight = 1.0 #0.5
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("FL_foot", "RR_foot"), ("FR_foot", "RL_foot"))
 
 
