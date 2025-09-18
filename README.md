@@ -53,4 +53,6 @@ python scripts/rsl_rl/play.py --task Isaac-widowgo1-rough-play --num_envs 1
 ## Acknowledgments
 This project was heavily structured and based off of [Go2Arm_Lab](https://github.com/zzzJie-Robot/Go2Arm_Lab)
 
+Additional references and rewards based off of [robot_lab](https://github.com/fan-ziqi/robot_lab)
+
 The RL algorithm implementation in this project references the [Deep-Whole-Body-Control](https://github.com/MarkFzp/Deep-Whole-Body-Control) project, for which we extend our sincere gratitude.

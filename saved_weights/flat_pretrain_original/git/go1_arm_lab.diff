@@ -1,0 +1,1831 @@
+--- git status ---
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add/rm <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   scripts/rsl_rl/play.py
+	modified:   scripts/rsl_rl/train.py
+	modified:   source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/__init__.py
+	deleted:    source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/agents/__init__.py
+	deleted:    source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/agents/rsl_rl_ppo_cfg.py
+	modified:   source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/go1_arm_lab_env_cfg.py
+	modified:   source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/mdp/__init__.py
+	modified:   source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/mdp/rewards.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	scripts/rsl_rl/local_rsl_rl/
+	source/go1_arm_lab/go1_arm_lab/assets/
+	source/go1_arm_lab/go1_arm_lab/env/
+	source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/config/
+	source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/mdp/cfg/
+	source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/mdp/observations.py
+	source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/mdp/pose_command.py
+	source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/mdp/velocity_command.py
+
+no changes added to commit (use "git add" and/or "git commit -a") 
+
+
+--- git diff ---
+diff --git a/scripts/rsl_rl/play.py b/scripts/rsl_rl/play.py
+index 192e7b2..be8e824 100644
+--- a/scripts/rsl_rl/play.py
++++ b/scripts/rsl_rl/play.py
+@@ -6,7 +6,6 @@
+ """Script to play a checkpoint if an RL agent from RSL-RL."""
+ 
+ """Launch Isaac Sim Simulator first."""
+-
+ import argparse
+ import sys
+ 
+@@ -58,7 +57,7 @@ import os
+ import time
+ import torch
+ 
+-from rsl_rl.runners import DistillationRunner, OnPolicyRunner
++from local_rsl_rl.runners import OnPolicyRunner
+ 
+ from isaaclab.envs import (
+     DirectMARLEnv,
+@@ -71,24 +70,122 @@ from isaaclab.utils.assets import retrieve_file_path
+ from isaaclab.utils.dict import print_dict
+ from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
+ 
+-from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx
++from isaaclab_rl.rsl_rl import export_policy_as_jit  # onnx not avaliable
++
++#TODO:
++from local_rsl_rl.wrappers import RslRlVecEnvWrapper
++from Go2Arm_Lab.tasks.manager_based.go2arm_lab.config.agents import Go2ArmRslRlOnPolicyRunnerCfg
+ 
+ import isaaclab_tasks  # noqa: F401
+ from isaaclab_tasks.utils import get_checkpoint_path
+ from isaaclab_tasks.utils.hydra import hydra_task_config
++import numpy as np
++
++import Go2Arm_Lab.tasks  # noqa: F401
++
++
++def prepare_obs(env):
++    """
++        Modify the order of observations containing historical information for easier network reading. Try to avoid modifications if possible!
++
++        Args:
++            env: The environment
++            agent_cfg: Agent configuration
++
++        Returns:
++            total(num_history, num_prop): Indices of the modified observation order
++            obs_new(num_envs, num_prop * num_history): Modified observation order indices corresponding to the observations
++        Notes:
++            Try to avoid modifications if possible!
++
++        Example:
++            In env.step, the original observation follows right-to-left order, after modification it becomes left-to-right
++
++            For example, the original observation is:
++                obs = ang_vel(3) * 10(num_history) + joint_pos(18) * 10(num_history) + joint_vel(18) * 10(num_history)
++            After env.step, the observation (obs) becomes structured as follows:
++                obs_old = ang_vel_timestep_10 -> ang_vel_timestep_1, joint_pos_timestep_10 -> joint_pos_timestep_1, joint_vel_timestep_10 -> joint_vel_timestep_1
++            We need to modify the observation order to:
++                obs_new = ang_vel_timestep_1, joint_pos_timestep_1, joint_vel_timestep_1 -> ang_vel_timestep_10, joint_pos_timestep_10, joint_vel_timestep_10
++    """
++    total = np.zeros((env.num_history, env.num_prop)) 
++    obs_new = torch.zeros(env.num_envs, env.num_prop * env.num_history).to(env.device)
++    
++    lst, length = env.get_obs_list_length()
++    lst = [item for item in lst if not item.startswith("policy-priv_")]
++
++    result_dict = {}
++    for i in range(len(lst)):
++        c = np.array(list(range( sum(length[: i + 1 ]) - int(length[i] / env.num_history), sum(length[: i + 1]) )))
++        result_dict[lst[i]] = c
++
++    key_list = list(result_dict.keys())
++    a1_list = []
++    for i in range(env.num_history):
++        for j in range(len(lst)):
++            a1 = np.concatenate([
++                result_dict[key_list[j]] - (i) * result_dict[key_list[j]].shape[0]])
++            a1_list.append(a1)
++            if j == len(lst) - 1:
++                a1_list = np.concatenate(a1_list)
++                total[i, :] = a1_list
++                a1_list = []
++    return total, obs_new
++
++def change_obs_order(obs, obs_new, total, env):
++
++    """
++        Modify the order of observations containing historical information for easier network reading. Try to avoid modifications if possible!
++
++        Args:
++            obs(num_envs, num_prop * num_history): The input to the actor and critic network
++            obs_new(num_envs, num_prop * num_history): Modified observation order indices corresponding to the observations
++            total(num_history, num_prop): Indices of the modified observation order
++            env: The environment
++            agent_cfg: Agent configuration
++
++        Returns:
++            obs(num_envs, num_prop * num_history): The input to the actor and critic network
++            obs_new(num_envs, num_prop * num_history): Modified observation order indices corresponding to the observations(need to reset)
++
++        Notes:
++            Try to avoid modifications if possible!
++
++        Example:
++            In env.step, the original observation follows right-to-left order, after modification it becomes left-to-right
++
++            For example, the original observation is:
++                obs = ang_vel(3) * 10(num_history) + joint_pos(18) * 10(num_history) + joint_vel(18) * 10(num_history)
++            After env.step, the observation (obs) becomes structured as follows:
++                obs_old = ang_vel_timestep_10 -> ang_vel_timestep_1, joint_pos_timestep_10 -> joint_pos_timestep_1, joint_vel_timestep_10 -> joint_vel_timestep_1
++            We need to modify the observation order to:
++                obs_new = ang_vel_timestep_1, joint_pos_timestep_1, joint_vel_timestep_1 -> ang_vel_timestep_10, joint_pos_timestep_10, joint_vel_timestep_10
++    """
++    for i in range(10):
++        obs_1 = obs[:, total[i, :]].to(env.device)
++        obs_new = torch.cat([obs_new, obs_1], dim = -1)
++
++    # only prop obs:    
++    obs = obs_new[:, env.num_prop  * env.num_history:] 
++    
++    # prop and priv obs:
++    # obs = torch.cat([obs_new[:, env.num_prop  * env.num_history :], 
++    #                  obs[:, env.num_prop  * env.num_history :]], dim=-1)  
++    
++    obs_new = torch.zeros(env.num_envs, env.num_prop * env.num_history).to(env.device)
++    return obs, obs_new
+ 
+-import go1_arm_lab.tasks  # noqa: F401
+ 
+ 
+ @hydra_task_config(args_cli.task, args_cli.agent)
+-def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
++def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: Go2ArmRslRlOnPolicyRunnerCfg):
+     """Play with RSL-RL agent."""
+     # grab task name for checkpoint path
+     task_name = args_cli.task.split(":")[-1]
+     train_task_name = task_name.replace("-Play", "")
+ 
+     # override configurations with non-hydra CLI arguments
+-    agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
++    agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
+ 
+     # set the environment seed
+@@ -112,9 +209,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
+ 
+     log_dir = os.path.dirname(resume_path)
+ 
+-    # set the log directory for the environment (works for all environment types)
+-    env_cfg.log_dir = log_dir
+-
+     # create isaac environment
+     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+ 
+@@ -139,43 +233,36 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
+ 
+     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+     # load previously trained model
+-    if agent_cfg.class_name == "OnPolicyRunner":
+-        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+-    elif agent_cfg.class_name == "DistillationRunner":
+-        runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+-    else:
+-        raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
+-    runner.load(resume_path)
++    ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
++    ppo_runner.load(resume_path)
+ 
+     # obtain the trained policy for inference
+-    policy = runner.get_inference_policy(device=env.unwrapped.device)
++    policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
+ 
+     # extract the neural network module
+     # we do this in a try-except to maintain backwards compatibility.
+     try:
+         # version 2.3 onwards
+-        policy_nn = runner.alg.policy
++        policy_nn = ppo_runner.alg.policy
+     except AttributeError:
+         # version 2.2 and below
+-        policy_nn = runner.alg.actor_critic
+-
+-    # extract the normalizer
+-    if hasattr(policy_nn, "actor_obs_normalizer"):
+-        normalizer = policy_nn.actor_obs_normalizer
+-    elif hasattr(policy_nn, "student_obs_normalizer"):
+-        normalizer = policy_nn.student_obs_normalizer
+-    else:
+-        normalizer = None
++        policy_nn = ppo_runner.alg.actor_critic
+ 
+     # export policy to onnx/jit
+     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+-    export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+-    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
++    export_policy_as_jit(policy_nn, ppo_runner.obs_normalizer, path=export_model_dir, filename="policy.pt")
++    
++    # onnx not avaliable
++    # export_policy_as_onnx(
++    #     policy_nn, normalizer=ppo_runner.obs_normalizer, path=export_model_dir, filename="policy.onnx"
++    # )
+ 
+     dt = env.unwrapped.step_dt
+ 
+     # reset environment
+-    obs = env.get_observations()
++    obs, _ = env.get_observations()
++    total, obs_new = prepare_obs(env)
++    
+     timestep = 0
+     # simulate environment
+     while simulation_app.is_running():
+@@ -183,9 +270,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
+         # run everything in inference mode
+         with torch.inference_mode():
+             # agent stepping
+-            actions = policy(obs)
++            obs, obs_new = change_obs_order(obs, obs_new, total, env)
++
++            actions = policy(obs,hist_encoding=True) #no priv obs
+             # env stepping
+-            obs, _, _, _ = env.step(actions)
++            obs, _, _, _,_ = env.step(actions)
+         if args_cli.video:
+             timestep += 1
+             # Exit the play loop after recording one video
+diff --git a/scripts/rsl_rl/train.py b/scripts/rsl_rl/train.py
+index 1e00b04..03b4a9b 100644
+--- a/scripts/rsl_rl/train.py
++++ b/scripts/rsl_rl/train.py
+@@ -15,6 +15,7 @@ from isaaclab.app import AppLauncher
+ # local imports
+ import cli_args  # isort: skip
+ 
++
+ # add argparse arguments
+ parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
+ parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
+@@ -30,7 +31,6 @@ parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy
+ parser.add_argument(
+     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
+ )
+-parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
+ # append RSL-RL cli arguments
+ cli_args.add_rsl_rl_args(parser)
+ # append AppLauncher cli args
+@@ -55,10 +55,10 @@ import platform
+ 
+ from packaging import version
+ 
+-# check minimum supported rsl-rl version
+-RSL_RL_VERSION = "3.0.1"
++# for distributed training, check minimum supported rsl-rl version
++RSL_RL_VERSION = "2.3.1"
+ installed_version = metadata.version("rsl-rl-lib")
+-if version.parse(installed_version) < version.parse(RSL_RL_VERSION):
++if args_cli.distributed and version.parse(installed_version) < version.parse(RSL_RL_VERSION):
+     if platform.system() == "Windows":
+         cmd = [r".\isaaclab.bat", "-p", "-m", "pip", "install", f"rsl-rl-lib=={RSL_RL_VERSION}"]
+     else:
+@@ -77,8 +77,7 @@ import os
+ import torch
+ from datetime import datetime
+ 
+-import omni
+-from rsl_rl.runners import DistillationRunner, OnPolicyRunner
++from local_rsl_rl.runners import OnPolicyRunner
+ 
+ from isaaclab.envs import (
+     DirectMARLEnv,
+@@ -90,7 +89,12 @@ from isaaclab.envs import (
+ from isaaclab.utils.dict import print_dict
+ from isaaclab.utils.io import dump_pickle, dump_yaml
+ 
+-from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
++# from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
++
++#TODO:
++from local_rsl_rl.wrappers import RslRlVecEnvWrapper
++from go1_arm_lab.tasks.manager_based.go1_arm_lab.config.agents import Go1ArmRslRlOnPolicyRunnerCfg
++
+ 
+ import isaaclab_tasks  # noqa: F401
+ from isaaclab_tasks.utils import get_checkpoint_path
+@@ -105,7 +109,7 @@ torch.backends.cudnn.benchmark = False
+ 
+ 
+ @hydra_task_config(args_cli.task, args_cli.agent)
+-def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
++def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: Go1ArmRslRlOnPolicyRunnerCfg):
+     """Train with RSL-RL agent."""
+     # override configurations with non-hydra CLI arguments
+     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+@@ -141,17 +145,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
+         log_dir += f"_{agent_cfg.run_name}"
+     log_dir = os.path.join(log_root_path, log_dir)
+ 
+-    # set the IO descriptors export flag if requested
+-    if isinstance(env_cfg, ManagerBasedRLEnvCfg):
+-        env_cfg.export_io_descriptors = args_cli.export_io_descriptors
+-    else:
+-        omni.log.warn(
+-            "IO descriptors are only supported for manager based RL environments. No IO descriptors will be exported."
+-        )
+-
+-    # set the log directory for the environment (works for all environment types)
+-    env_cfg.log_dir = log_dir
+-
+     # create isaac environment
+     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+ 
+@@ -179,12 +172,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
+     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+ 
+     # create runner from rsl-rl
+-    if agent_cfg.class_name == "OnPolicyRunner":
+-        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+-    elif agent_cfg.class_name == "DistillationRunner":
+-        runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+-    else:
+-        raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
++    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+     # write git state to logs
+     runner.add_git_repo_to_log(__file__)
+     # load the checkpoint
+diff --git a/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/__init__.py b/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/__init__.py
+index 328d22a..14e71f6 100644
+--- a/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/__init__.py
++++ b/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/__init__.py
+@@ -2,10 +2,10 @@
+ # All rights reserved.
+ #
+ # SPDX-License-Identifier: BSD-3-Clause
+-
++"""
+ import gymnasium as gym
+ 
+-from . import agents
++from config import agents
+ 
+ ##
+ # Register Gym environments.
+@@ -20,4 +20,5 @@ gym.register(
+         "env_cfg_entry_point": f"{__name__}.go1_arm_lab_env_cfg:Go1ArmLabEnvCfg",
+         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
+     },
+-)
+\ No newline at end of file
++)
++"""
+\ No newline at end of file
+diff --git a/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/agents/__init__.py b/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/agents/__init__.py
+deleted file mode 100644
+index a597dfa..0000000
+--- a/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/agents/__init__.py
++++ /dev/null
+@@ -1,4 +0,0 @@
+-# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+-# All rights reserved.
+-#
+-# SPDX-License-Identifier: BSD-3-Clause
+\ No newline at end of file
+diff --git a/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/agents/rsl_rl_ppo_cfg.py b/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/agents/rsl_rl_ppo_cfg.py
+deleted file mode 100644
+index 4556af6..0000000
+--- a/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/agents/rsl_rl_ppo_cfg.py
++++ /dev/null
+@@ -1,38 +0,0 @@
+-# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+-# All rights reserved.
+-#
+-# SPDX-License-Identifier: BSD-3-Clause
+-
+-from isaaclab.utils import configclass
+-
+-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+-
+-
+-@configclass
+-class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
+-    num_steps_per_env = 16
+-    max_iterations = 150
+-    save_interval = 50
+-    experiment_name = "cartpole_direct"
+-    policy = RslRlPpoActorCriticCfg(
+-        init_noise_std=1.0,
+-        actor_obs_normalization=False,
+-        critic_obs_normalization=False,
+-        actor_hidden_dims=[32, 32],
+-        critic_hidden_dims=[32, 32],
+-        activation="elu",
+-    )
+-    algorithm = RslRlPpoAlgorithmCfg(
+-        value_loss_coef=1.0,
+-        use_clipped_value_loss=True,
+-        clip_param=0.2,
+-        entropy_coef=0.005,
+-        num_learning_epochs=5,
+-        num_mini_batches=4,
+-        learning_rate=1.0e-3,
+-        schedule="adaptive",
+-        gamma=0.99,
+-        lam=0.95,
+-        desired_kl=0.01,
+-        max_grad_norm=1.0,
+-    )
+\ No newline at end of file
+diff --git a/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/go1_arm_lab_env_cfg.py b/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/go1_arm_lab_env_cfg.py
+index 853194c..684fcd7 100644
+--- a/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/go1_arm_lab_env_cfg.py
++++ b/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/go1_arm_lab_env_cfg.py
+@@ -1,13 +1,10 @@
+-# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+-# All rights reserved.
+-#
+-# SPDX-License-Identifier: BSD-3-Clause
+-
+ import math
++from dataclasses import MISSING
+ 
+ import isaaclab.sim as sim_utils
+ from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+ from isaaclab.envs import ManagerBasedRLEnvCfg
++from isaaclab.managers import CurriculumTermCfg as CurrTerm
+ from isaaclab.managers import EventTermCfg as EventTerm
+ from isaaclab.managers import ObservationGroupCfg as ObsGroup
+ from isaaclab.managers import ObservationTermCfg as ObsTerm
+@@ -15,52 +12,281 @@ from isaaclab.managers import RewardTermCfg as RewTerm
+ from isaaclab.managers import SceneEntityCfg
+ from isaaclab.managers import TerminationTermCfg as DoneTerm
+ from isaaclab.scene import InteractiveSceneCfg
++from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
++from isaaclab.terrains import TerrainImporterCfg, TerrainGeneratorCfg
+ from isaaclab.utils import configclass
++from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
++from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
++import isaaclab.terrains as terrain_gen
++
+ 
+-from . import mdp
++import go1_arm_lab.tasks.manager_based.go1_arm_lab.mdp as mdp
+ 
+ ##
+ # Pre-defined configs
+ ##
+-
+-from isaaclab_assets.robots.cartpole import CARTPOLE_CFG  # isort:skip
++from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG  # isort: skip
+ 
+ 
+ ##
+ # Scene definition
+ ##
+ 
++GO1ARM_TERRAINS_CFG = TerrainGeneratorCfg(
++    size=(8.0, 8.0),
++    border_width=20.0,
++    num_rows=10,
++    num_cols=20,
++    horizontal_scale=0.1,
++    vertical_scale=0.005,
++    slope_threshold=0.75,
++    use_cache=False,
++    sub_terrains={
++        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.3),
++        "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
++            proportion=0.7, noise_range=(-0.05, 0.05), noise_step=0.01, border_width=0.25
++        ),
++    },
++)
++
+ 
+ @configclass
+-class Go1ArmLabSceneCfg(InteractiveSceneCfg):
+-    """Configuration for a cart-pole scene."""
++class MySceneCfg(InteractiveSceneCfg):
++    """Configuration for the terrain scene with a legged robot."""
+ 
+-    # ground plane
+-    ground = AssetBaseCfg(
++    # ground terrain
++    terrain = TerrainImporterCfg(
+         prim_path="/World/ground",
+-        spawn=sim_utils.GroundPlaneCfg(size=(100.0, 100.0)),
++        terrain_type="generator",
++        terrain_generator=GO1ARM_TERRAINS_CFG,
++        max_init_terrain_level=5,
++        collision_group=-1,
++        physics_material=sim_utils.RigidBodyMaterialCfg(
++            friction_combine_mode="multiply",
++            restitution_combine_mode="multiply",
++            static_friction=1.0,
++            dynamic_friction=1.0,
++        ),
++        visual_material=sim_utils.MdlFileCfg(
++            mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
++            project_uvw=True,
++            texture_scale=(0.25, 0.25),
++        ),
++        debug_vis=False,
++    )
++    # robots
++    robot: ArticulationCfg = MISSING
++    # sensors
++    height_scanner = RayCasterCfg(
++        prim_path="{ENV_REGEX_NS}/Robot/base",
++        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
++        attach_yaw_only=True,
++        pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),
++        debug_vis=False,
++        mesh_prim_paths=["/World/ground"],
++    )
++    contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
++    # lights
++    sky_light = AssetBaseCfg(
++        prim_path="/World/skyLight",
++        spawn=sim_utils.DomeLightCfg(
++            intensity=750.0,
++            texture_file=f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
++        ),
+     )
+ 
+-    # robot
+-    robot: ArticulationCfg = CARTPOLE_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+ 
+-    # lights
+-    dome_light = AssetBaseCfg(
+-        prim_path="/World/DomeLight",
+-        spawn=sim_utils.DomeLightCfg(color=(0.9, 0.9, 0.9), intensity=500.0),
++@configclass
++class EventCfg:
++    """Configuration for events."""
++
++    # startup
++    physics_material = EventTerm(
++        func=mdp.randomize_rigid_body_material,
++        mode="startup",
++        params={
++            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
++            "static_friction_range": (0.5, 4.0),
++            "dynamic_friction_range": (0.5, 2.0),
++            "restitution_range": (0.0, 0.0),
++            "num_buckets": 64,
++        },
+     )
+ 
++    add_base_mass = EventTerm(
++        func=mdp.randomize_rigid_body_mass,
++        mode="startup",
++        params={
++            "asset_cfg": SceneEntityCfg("robot", body_names="base"),
++            "mass_distribution_params": (-3.0, 3.0),
++            "operation": "add",
++        },
++    )
++
++    # base_com = EventTerm(
++    #     func=mdp.randomize_rigid_body_com,
++    #     mode="startup",
++    #     params={
++    #         "asset_cfg": SceneEntityCfg("robot", body_names="base"),
++    #         "com_range": {"x": (-0.05, 0.05), "y": (-0.05, 0.05), "z": (-0.01, 0.01)},
++    #     },
++    # )
++
++    add_ee_mass = EventTerm(
++        func=mdp.randomize_rigid_body_mass,
++        mode="startup",
++        params={
++            "asset_cfg": SceneEntityCfg("robot", body_names="wx250s_gripper_link"),
++            "mass_distribution_params": (-0.1, 0.5),
++            "operation": "add",
++        },
++    )
++
++    # reset
++    base_external_force_torque = EventTerm(
++        func=mdp.apply_external_force_torque,
++        mode="reset",
++        params={
++            "asset_cfg": SceneEntityCfg("robot", body_names="base"),
++            "force_range": (0.0, 0.0),
++            "torque_range": (-0.0, 0.0),
++        },
++    )
++
++    reset_base = EventTerm(
++        func=mdp.reset_root_state_uniform,
++        mode="reset",
++        params={
++            "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
++            "velocity_range": {
++                "x": (-0.5, 0.5),
++                "y": (-0.5, 0.5),
++                "z": (-0.5, 0.5),
++                "roll": (-0.5, 0.5),
++                "pitch": (-0.5, 0.5),
++                "yaw": (-0.5, 0.5),
++            },
++        },
++    )
++    
++    actuator_gains = EventTerm(
++        func=mdp.randomize_actuator_gains,
++        mode="reset",
++        params={
++            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
++            "stiffness_distribution_params": (0.8, 1.2),
++            "damping_distribution_params": (0.8, 1.2),
++            "operation": "scale",
++        },
++    )
++
++    reset_robot_joints = EventTerm(
++        func=mdp.reset_joints_by_scale,
++        mode="reset",
++        params={
++            "position_range": (0.5, 1.5),
++            "velocity_range": (0.0, 0.0),
++        },
++    )
++
++    # interval
++    push_robot = EventTerm(
++        func=mdp.push_by_setting_velocity,
++        mode="interval",
++        interval_range_s=(10.0, 15.0),
++        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
++    )
+ 
+ ##
+ # MDP settings
+ ##
+ 
++@configclass
++class CommandsCfg:
++    """Command specifications for the MDP."""
++    ## Go2ARM
++    
++    ee_pose = mdp.command_cfg.UniformPoseCommandCfg(
++        asset_name="robot",
++        body_name="wx250s_gripper_link",
++        resampling_time_range=(6.0,8.0),
++        debug_vis=True,
++        is_Go1Arm=True,
++        curriculum_coeff = 1000,          
++        ranges_final =mdp.command_cfg.UniformPoseCommandCfg.Ranges(
++            pos_x=(0.4, 0.6),
++            pos_y=(-0.35, 0.35),
++            pos_z=(0.1, 0.55), # world frame not base frame
++            roll=(-0.0, 0.0),
++            pitch=(-3.14 / 9, 3.14 / 9),  # depends on end-effector axis
++            yaw=(-3.14 / 9, 3.14 / 9),
++        ),
++        ranges = mdp.command_cfg.UniformPoseCommandCfg.Ranges(
++            pos_x=(0.4, 0.6),
++            pos_y=(-0.35, 0.35),
++            pos_z=(0.1, 0.55), # world frame not base frame
++            roll=(-0.0, 0.0),
++            pitch=(-3.14 / 9, 3.14 / 9),  # depends on end-effector axis
++            yaw=(-3.14 / 9, 3.14 / 9),
++        ),
++        ranges_init=mdp.command_cfg.UniformPoseCommandCfg.Ranges(
++            pos_x=(0.45, 0.5), 
++            pos_y=(-0.05, 0.05),
++            pos_z=(0.35, 0.4), # world frame not base frame
++            roll=(-0.0, 0.0),
++            pitch=(-0.0, 0.0),  # depends on end-effector axis
++            yaw=(-0.0, 0.0),
++        ),
++    )
++
++    base_velocity = mdp.command_cfg.UniformVelocityCommandCfg(
++        asset_name="robot",
++        resampling_time_range=(10.0, 10.0),
++        rel_standing_envs=0.1,
++        debug_vis=True,
++        is_Go1Arm=True,
++        curriculum_coeff= 1000,         
++        ranges=mdp.command_cfg.UniformVelocityCommandCfg.Ranges(
++            lin_vel_x=(0.2, 1.0), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-0.5, 0.5),heading=(-0.0, 0.0)
++        ),
++        ranges_final=mdp.command_cfg.UniformVelocityCommandCfg.Ranges(
++            lin_vel_x=(0.1, 0.8), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-0.5, 0.5),heading=(-0.0, 0.0)
++        ),
++        ranges_init=mdp.command_cfg.UniformVelocityCommandCfg.Ranges(
++            lin_vel_x=(0.1, 0.35), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.1, 0.1),heading=(-0.0, 0.0)
++        ),
++    )
+ 
+ @configclass
+ class ActionsCfg:
+     """Action specifications for the MDP."""
+-
+-    joint_effort = mdp.JointEffortActionCfg(asset_name="robot", joint_names=["slider_to_cart"], scale=100.0)
++    joint_pos = mdp.JointPositionActionCfg(asset_name="robot", 
++                                           joint_names=[
++                                                    "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
++                                                    "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
++                                                    "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
++                                                    "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
++                                                    ],
++                                           scale = {"FR_hip_joint": 0.25, "FR_thigh_joint": 0.25, "FR_calf_joint": 0.25,
++                                                    "FL_hip_joint": 0.25, "FL_thigh_joint": 0.25, "FL_calf_joint": 0.25,
++                                                    "RR_hip_joint": 0.25, "RR_thigh_joint": 0.25, "RR_calf_joint": 0.25,
++                                                    "RL_hip_joint": 0.25, "RL_thigh_joint": 0.25, "RL_calf_joint": 0.25,}, 
++                                         use_default_offset=True,
++                                         preserve_order=True,
++    )   
++    arm_pose = mdp.JointPositionActionCfg(asset_name="robot",
++                                          joint_names=[
++                                              "widow_waist", "widow_shoulder", "widow_elbow", 
++                                              "widow_forearm_roll", "widow_wrist_angle", "widow_wrist_rotate"],
++                                           scale = {"widow_waist":        0.5, # 0.8
++                                                    "widow_shoulder":     0.5, # 0.35
++                                                    "widow_elbow":        0.5, # 0.35
++                                                    "widow_forearm_roll": 0.5, # 0.35
++                                                    "widow_wrist_angle":  0.5, # 0.35
++                                                    "widow_wrist_rotate": 0.5}, # 0.35
++                                            use_default_offset=True,
++                                            preserve_order=True,
++    )
+ 
+ 
+ @configclass
+@@ -70,111 +296,277 @@ class ObservationsCfg:
+     @configclass
+     class PolicyCfg(ObsGroup):
+         """Observations for policy group."""
+-
+         # observation terms (order preserved)
+-        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
+-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel)
+-
+-        def __post_init__(self) -> None:
+-            self.enable_corruption = False
++        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, history_length=10,noise=Unoise(n_min=-0.0, n_max=0.0))  # dim = 3
++        joint_pos = ObsTerm(func=mdp.joint_pos_rel, history_length=10,noise=Unoise(n_min=-0.01, n_max=0.01)) # dim = 18
++        joint_vel = ObsTerm(func=mdp.joint_vel_rel, history_length=10, noise=Unoise(n_min=-0.5, n_max=0.5)) # dim = 18
++        actions = ObsTerm(func=mdp.last_action, history_length=10) # dim = 18
++        velocity_commands = ObsTerm(func=mdp.generated_commands, history_length=10,
++                                    params={"command_name": "base_velocity"}) # dim = 3
++        Go1_pose_command = ObsTerm(func=mdp.generated_commands, history_length=10,
++                                   params={"command_name": "ee_pose"}) # dim = 7
++        projected_gravity = ObsTerm(
++            func=mdp.projected_gravity,
++            noise=Unoise(n_min=-0.1, n_max=0.1),
++            history_length=10
++        )        # dim = 3
++        
++        # priv 
++        # must have a prefix of "priv_". 
++        priv_mass_base = ObsTerm(func=mdp.get_mass_base)# dim = 1
++        priv_mass_ee = ObsTerm(func=mdp.get_mass_ee) # dim = 1
++        priv_joint_torques = ObsTerm(func=mdp.get_joints_torques) # dim = 18
++        priv_base_lin_vel = ObsTerm(func=mdp.base_lin_vel)  # dim = 3
++        priv_feet_contact = ObsTerm(func=mdp.feet_contact,
++                               params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot")}) # dim = 4 bool
++        # more priv_obs:
++        # priv_xxx = xxx
++        
++        def __post_init__(self):
++            self.enable_corruption = True
+             self.concatenate_terms = True
+-
++        
+     # observation groups
+     policy: PolicyCfg = PolicyCfg()
+ 
+ 
+ @configclass
+-class EventCfg:
+-    """Configuration for events."""
++class RewardsCfg:
++    """Reward terms for the MDP."""
+ 
+-    # reset
+-    reset_cart_position = EventTerm(
+-        func=mdp.reset_joints_by_offset,
+-        mode="reset",
++    # -- ARM 
++    # The name must have a prefix of "end_effector_".
++    end_effector_position_tracking = RewTerm(
++        func=mdp.position_command_error_exp,
++        weight=2.5,
++        params={"asset_cfg": SceneEntityCfg("robot", body_names="wx250s_gripper_link"),
++                "command_name": "ee_pose",
++                "std": 0.2},
++    )
++
++    end_effector_orientation_tracking = RewTerm(
++        func=mdp.orientation_command_error,
++        weight=-1.5,
++        params={"asset_cfg": SceneEntityCfg("robot", body_names="wx250s_gripper_link"), 
++                "command_name": "ee_pose"},
++    )
++
++    end_effector_action_rate = RewTerm(func=mdp.action_rate_l2_arm, weight=-0.005)
++
++    end_effector_action_smoothness = RewTerm(func=mdp.arm_action_smoothness_penalty, weight=-0.02)
++
++    # more rewards
++    # end_effector_xxx = xxx
++
++
++    # -- LEG
++    tracking_lin_vel_x_l1 = RewTerm(
++        func=mdp.track_lin_vel_xy_exp, 
++        weight=1.5, 
++        params={
++                "command_name": "base_velocity", 
++                "std":0.2}
++    )
++    track_ang_vel_z_exp = RewTerm(
++        func=mdp.track_ang_vel_z_exp, 
++        weight=1.5,
++         params={ 
++                 "command_name": "base_velocity", 
++                 "std": math.sqrt(0.2)}
++    )
++
++    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.5)
++    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.02) # -0.05
++    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2_Go1, weight=-2.0e-5) # - 0.0002
++    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2_Go1, weight=-2.5e-7)
++    action_rate_l2 = RewTerm(func=mdp.action_rate_l2_Go1, weight=-0.01)
++
++    feet_air_time = RewTerm(
++        func=mdp.feet_air_time,
++        weight= 0.5,
+         params={
+-            "asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"]),
+-            "position_range": (-1.0, 1.0),
+-            "velocity_range": (-0.5, 0.5),
++            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
++            "command_name": "base_velocity",
++            "threshold": 0.5,
+         },
+     )
+ 
+-    reset_pole_position = EventTerm(
+-        func=mdp.reset_joints_by_offset,
+-        mode="reset",
++    F_feet_air_time = RewTerm(
++        func=mdp.feet_air_time,
++        weight= 0.5,
++        params={
++            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="F.*_foot"),
++            "command_name": "base_velocity",
++            "threshold": 0.5,
++        },
++    )
++    R_feet_air_time = RewTerm(
++        func=mdp.feet_air_time,
++        weight= 2.0,
++        params={
++            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="R.*_foot"),
++            "command_name": "base_velocity",
++            "threshold": 0.5,
++        },
++    )
++
++    feet_height = RewTerm(
++        func=mdp.feet_height,
++        weight=0.0,
+         params={
+-            "asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"]),
+-            "position_range": (-0.25 * math.pi, 0.25 * math.pi),
+-            "velocity_range": (-0.25 * math.pi, 0.25 * math.pi),
++            "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot"),
++            "tanh_mult": 2.0,
++            "target_height": 0.08,
++            "command_name": "base_velocity",
+         },
+     )
+ 
+ 
+-@configclass
+-class RewardsCfg:
+-    """Reward terms for the MDP."""
++    feet_height_body = RewTerm(
++        func=mdp.feet_height_body,
++        weight=0.0,
++        params={
++            "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot"),
++            "tanh_mult": 2.0,
++            "target_height": -0.2,
++            "command_name": "base_velocity",
++        },
++    )
+ 
+-    # (1) Constant running reward
+-    alive = RewTerm(func=mdp.is_alive, weight=1.0)
+-    # (2) Failure penalty
+-    terminating = RewTerm(func=mdp.is_terminated, weight=-2.0)
+-    # (3) Primary task: keep pole upright
+-    pole_pos = RewTerm(
+-        func=mdp.joint_pos_target_l2,
+-        weight=-1.0,
+-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"]), "target": 0.0},
++    foot_contact = RewTerm(
++        func=mdp.standing_feet_contact_force,
++        weight= 0.003,
++        params={
++            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="R.*_foot"),
++            "command_name": "base_velocity",
++            "force_threshold": 7.5,
++            "command_threshold": 0.1,
++        },
+     )
+-    # (4) Shaping tasks: lower cart velocity
+-    cart_vel = RewTerm(
+-        func=mdp.joint_vel_l1,
+-        weight=-0.01,
+-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"])},
++
++    hip_deviation = RewTerm(
++        func=mdp.joint_deviation_l1,
++        weight=-0.4,
++        # params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint", ".*_thigh_joint", ".*_calf_joint"])},
++        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint"])},
+     )
+-    # (5) Shaping tasks: lower pole angular velocity
+-    pole_vel = RewTerm(
+-        func=mdp.joint_vel_l1,
+-        weight=-0.005,
+-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"])},
++
++    joint_deviation = RewTerm(
++        func=mdp.joint_deviation_l1,
++        weight=-0.04,
++        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_thigh_joint", ".*_calf_joint"])},
+     )
+ 
++    action_smoothness = RewTerm(
++        func=mdp.leg_action_smoothness_penalty,
++        weight=-0.02,
++    )
++
++    height_reward = RewTerm(func=mdp.base_height_l2, weight=-2.0, params={"target_height": 0.3})
++
++    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
++   
++   
++    # thigh_contact = RewTerm(
++    #     func=mdp.undesired_contacts,
++    #     weight=-2.0,
++    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_thigh"), "threshold": 0.5},
++    # )
++
++    # calf_contact = RewTerm(
++    #     func=mdp.undesired_contacts,
++    #     weight=-2.0,
++    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_calf"), "threshold": 0.5},
++    # )
++
++    # arm_contact = RewTerm(
++    #     func=mdp.undesired_contacts,
++    #     weight=-2.0,
++    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_link"), "threshold": 0.5},
++    # )
+ 
+ @configclass
+ class TerminationsCfg:
+     """Termination terms for the MDP."""
+ 
+-    # (1) Time out
+     time_out = DoneTerm(func=mdp.time_out, time_out=True)
+-    # (2) Cart out of bounds
+-    cart_out_of_bounds = DoneTerm(
+-        func=mdp.joint_pos_out_of_manual_limit,
+-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"]), "bounds": (-3.0, 3.0)},
++    base_contact = DoneTerm(
++        func=mdp.illegal_contact,
++        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 0.5},
++    )
++    thigh_contact = DoneTerm(
++        func=mdp.illegal_contact,
++        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_thigh"), "threshold":0.5},
+     )
++    arm_contact = DoneTerm(
++        func=mdp.illegal_contact,
++        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_link"), "threshold": 0.5},
++    )
++    calf_contact = DoneTerm(
++        func=mdp.illegal_contact,
++        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_calf"), "threshold": 0.5},
++    )
++
+ 
+ 
++@configclass
++class CurriculumCfg:
++    """Curriculum terms for the MDP."""
++
++    # terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
++    flat_ori_modify = CurrTerm(func=mdp.modify_reward_weight,
++                               params={"term_name": "flat_orientation_l2",
++                                       "num_steps": 2000,
++                                       "weight": -0.00})
++
++    flat_height_modify = CurrTerm(func=mdp.modify_reward_weight,
++                               params={"term_name": "height_reward",
++                                       "num_steps": 4000,
++                                       "weight": -1.00})
++    
+ ##
+ # Environment configuration
+ ##
+ 
+-
+ @configclass
+-class Go1ArmLabEnvCfg(ManagerBasedRLEnvCfg):
++class LocomotionVelocityEnvCfg(ManagerBasedRLEnvCfg):
++    """Configuration for the locomotion velocity-tracking environment."""
++
+     # Scene settings
+-    scene: Go1ArmLabSceneCfg = Go1ArmLabSceneCfg(num_envs=4096, env_spacing=4.0)
++    scene: MySceneCfg = MySceneCfg(num_envs=4096, env_spacing=2.5)
+     # Basic settings
+     observations: ObservationsCfg = ObservationsCfg()
+     actions: ActionsCfg = ActionsCfg()
+-    events: EventCfg = EventCfg()
++    commands: CommandsCfg = CommandsCfg()
+     # MDP settings
+     rewards: RewardsCfg = RewardsCfg()
+     terminations: TerminationsCfg = TerminationsCfg()
++    events: EventCfg = EventCfg()
++    curriculum: CurriculumCfg = CurriculumCfg()
+ 
+-    # Post initialization
+-    def __post_init__(self) -> None:
++    def __post_init__(self):
+         """Post initialization."""
+         # general settings
+-        self.decimation = 2
+-        self.episode_length_s = 5
+-        # viewer settings
+-        self.viewer.eye = (8.0, 0.0, 5.0)
++        self.decimation = 4
++        self.episode_length_s = 20.0
+         # simulation settings
+-        self.sim.dt = 1 / 120
+-        self.sim.render_interval = self.decimation
+\ No newline at end of file
++        self.sim.dt = 0.005
++        self.sim.render_interval = self.decimation
++        self.sim.physics_material = self.scene.terrain.physics_material
++        self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
++        # update sensor update periods
++        # we tick all the sensors based on the smallest update period (physics update period)
++        if self.scene.height_scanner is not None:
++            self.scene.height_scanner.update_period = self.decimation * self.sim.dt
++        if self.scene.contact_forces is not None:
++            self.scene.contact_forces.update_period = self.sim.dt
++
++        # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator
++        # this generates terrains with increasing difficulty and is useful for training
++        if getattr(self.curriculum, "terrain_levels", None) is not None:
++            if self.scene.terrain.terrain_generator is not None:
++                self.scene.terrain.terrain_generator.curriculum = True
++        else:
++            if self.scene.terrain.terrain_generator is not None:
++                self.scene.terrain.terrain_generator.curriculum = False
++
+diff --git a/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/mdp/__init__.py b/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/mdp/__init__.py
+index 6b43c27..7364abd 100644
+--- a/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/mdp/__init__.py
++++ b/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/mdp/__init__.py
+@@ -3,8 +3,22 @@
+ #
+ # SPDX-License-Identifier: BSD-3-Clause
+ 
++# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
++# All rights reserved.
++#
++# SPDX-License-Identifier: BSD-3-Clause
++
+ """This sub-module contains the functions that are specific to the environment."""
+ 
++# from isaaclab.envs.mdp import *  # noqa: F401, F403
++
++# from .rewards import *  # noqa: F401, F403
++
+ from isaaclab.envs.mdp import *  # noqa: F401, F403
++from isaaclab_tasks.manager_based.locomotion.velocity.mdp import *  # noqa: F401, F403
+ 
++from .cfg import command_cfg  # noqa: F401
+ from .rewards import *  # noqa: F401, F403
++from .observations import *
++from .pose_command import UniformPoseCommand 
++from .velocity_command import UniformVelocityCommand 
+diff --git a/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/mdp/rewards.py b/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/mdp/rewards.py
+index ceb3956..65ed384 100644
+--- a/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/mdp/rewards.py
++++ b/source/go1_arm_lab/go1_arm_lab/tasks/manager_based/go1_arm_lab/mdp/rewards.py
+@@ -3,24 +3,692 @@
+ #
+ # SPDX-License-Identifier: BSD-3-Clause
+ 
++"""Common functions that can be used to enable reward functions.
++
++The functions can be passed to the :class:`isaaclab.managers.RewardTermCfg` object to include
++the reward introduced by the function.
++"""
++
+ from __future__ import annotations
+ 
+ import torch
+ from typing import TYPE_CHECKING
++import isaaclab.utils.math as math_utils
+ 
+-from isaaclab.assets import Articulation
++from isaaclab.assets import Articulation, RigidObject
+ from isaaclab.managers import SceneEntityCfg
+-from isaaclab.utils.math import wrap_to_pi
++from isaaclab.managers.manager_base import ManagerTermBase
++from isaaclab.managers.manager_term_cfg import RewardTermCfg
++from isaaclab.sensors import ContactSensor
++from isaaclab.utils.math import combine_frame_transforms, quat_error_magnitude, quat_mul, subtract_frame_transforms
++from isaaclab.utils.math import quat_apply_inverse, yaw_quat
+ 
+ if TYPE_CHECKING:
+     from isaaclab.envs import ManagerBasedRLEnv
+ 
++PLAY = False
++import numpy as np
++
++# ================================================================================================================================
++
++def position_command_error_exp(env: ManagerBasedRLEnv, command_name: str, std: float, asset_cfg: SceneEntityCfg) -> torch.Tensor:
++    # extract the asset (to enable type hinting)
++    asset: RigidObject = env.scene[asset_cfg.name]
++    command = env.command_manager.get_command(command_name)
++    # obtain the desired and current positions
++    des_pos_b = command[:, :3]
++    des_pos_w, _ = combine_frame_transforms(asset.data.root_state_w[:, :3], asset.data.root_state_w[:, 3:7], des_pos_b)
++    des_pos_w[:,2] = des_pos_b[:,2] + asset.data.root_state_w[:, 2]
++    curr_pos_w = asset.data.body_state_w[:, asset_cfg.body_ids[0], :3]  # type: ignore
++    output = torch.exp(-torch.sum(torch.abs(curr_pos_w - des_pos_w) / std, dim=1))
++    pos_b, _ = subtract_frame_transforms(asset.data.root_state_w[:, :3], asset.data.root_state_w[:, 3:7], des_pos_w)
++    if PLAY:
++        with open('data/pos_des.txt', 'a') as f:
++            tensor_cpu = des_pos_b.detach().cpu() 
++            tensor_str = np.array2string(tensor_cpu.numpy(), precision=4, separator=', ', suppress_small=True)
++            f.write(tensor_str + '\n')
++
++    if PLAY:
++        with open('data/pos.txt', 'a') as f:
++            tensor_cpu = pos_b.detach().cpu() 
++            tensor_str = np.array2string(tensor_cpu.numpy(), precision=4, separator=', ', suppress_small=True)
++            f.write(tensor_str + '\n')     
++    # print("pos:",torch.sum(torch.abs(curr_pos_w - des_pos_w)))
++    return output
++
++
++def orientation_command_error(env: ManagerBasedRLEnv, command_name: str, asset_cfg: SceneEntityCfg) -> torch.Tensor:
++    """Penalize tracking orientation error using shortest path.
++
++    The function computes the orientation error between the desired orientation (from the command) and the
++    current orientation of the asset's body (in world frame). The orientation error is computed as the shortest
++    path between the desired and current orientations.
++    """
++    # extract the asset (to enable type hinting)
++    asset: RigidObject = env.scene[asset_cfg.name]
++    command = env.command_manager.get_command(command_name)
++    # obtain the desired and current orientations
++    des_quat_b = command[:, 3:7]
++    des_quat_w = quat_mul(asset.data.root_state_w[:, 3:7], des_quat_b)
++    curr_quat_w = asset.data.body_state_w[:, asset_cfg.body_ids[0], 3:7]  # type: ignore
++    return quat_error_magnitude(curr_quat_w, des_quat_w)
++
++
++def action_rate_l2_arm(env: ManagerBasedRLEnv) -> torch.Tensor:
++    """Penalize the rate of change of the actions using L2 squared kernel."""
++    return torch.sum(torch.square(env.action_manager.action[:,12:] - env.action_manager.prev_action[:,12:]), dim=1)
++
++
++def arm_action_smoothness_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
++    """Penalize large instantaneous changes in the network action output"""
++    return torch.linalg.norm((env.action_manager.action[:, 12:] - env.action_manager.prev_action[:, 12:]), dim=1)
++
++
++def track_lin_vel_xy_exp(
++    env: ManagerBasedRLEnv, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
++) -> torch.Tensor:
++    """Reward tracking of linear velocity commands (xy axes) using exponential kernel."""
++    # extract the used quantities (to enable type-hinting)
++    asset: RigidObject = env.scene[asset_cfg.name]
++    # compute the error
++    lin_vel_error = torch.sum(
++        torch.square(env.command_manager.get_command(command_name)[:, :2] - asset.data.root_lin_vel_b[:, :2]),
++        dim=1,
++    )
++    if PLAY:
++        with open('data/vel_des.txt', 'a') as f:
++            tensor_cpu = env.command_manager.get_command(command_name)[:, :2].detach().cpu() 
++            tensor_str = np.array2string(tensor_cpu.numpy(), precision=4, separator=', ', suppress_small=True)
++            f.write(tensor_str + '\n')
++
++    if PLAY:
++        with open('data/vel.txt', 'a') as f:
++            tensor_cpu = asset.data.root_lin_vel_b[:, :2].detach().cpu() 
++            tensor_str = np.array2string(tensor_cpu.numpy(), precision=4, separator=', ', suppress_small=True)
++            f.write(tensor_str + '\n')    
++    # print("vel",lin_vel_error) 
++    return torch.exp(-lin_vel_error / std)
++
++
++def track_ang_vel_z_exp(
++    env: ManagerBasedRLEnv, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
++) -> torch.Tensor:
++    """Reward tracking of angular velocity commands (yaw) using exponential kernel."""
++    # extract the used quantities (to enable type-hinting)
++    asset: RigidObject = env.scene[asset_cfg.name]
++    # compute the error
++    ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_b[:, 2])
++    return torch.exp(-ang_vel_error / std**2)
++
++
++def lin_vel_z_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    """Penalize z-axis base linear velocity using L2 squared kernel."""
++    # extract the used quantities (to enable type-hinting)
++    asset: RigidObject = env.scene[asset_cfg.name]
++    return torch.square(asset.data.root_lin_vel_b[:, 2])
++
++
++def ang_vel_xy_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    """Penalize xy-axis base angular velocity using L2 squared kernel."""
++    # extract the used quantities (to enable type-hinting)
++    asset: RigidObject = env.scene[asset_cfg.name]
++    return torch.sum(torch.square(asset.data.root_ang_vel_b[:, :2]), dim=1)
++
++## from Go2Arm
++def joint_torques_l2_Go1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    """Penalize joint torques applied on the articulation using L2 squared kernel.
++
++    NOTE: Only the joints configured in :attr:`asset_cfg.joint_ids` will have their joint torques contribute to the term.
++    """
++    # extract the used quantities (to enable type-hinting)
++    asset: Articulation = env.scene[asset_cfg.name]
++    leg_joint, _ = asset.find_joints([ "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
++                        "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
++                        "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
++                        "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint"
++                        ])
++    return torch.sum(torch.square(asset.data.applied_torque[:, leg_joint]), dim=1)
++
++## from Go2Arm
++def joint_acc_l2_Go1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    """Penalize joint accelerations on the articulation using L2 squared kernel.
++
++    NOTE: Only the joints configured in :attr:`asset_cfg.joint_ids` will have their joint accelerations contribute to the term.
++    """
++    # extract the used quantities (to enable type-hinting)
++    asset: Articulation = env.scene[asset_cfg.name]
++    leg_joint, _ = asset.find_joints([ "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
++                        "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
++                        "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
++                        "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint"
++                        ])
++    return torch.sum(torch.square(asset.data.joint_acc[:, leg_joint]), dim=1)
++
++## from Go2Arm
++def action_rate_l2_Go1(env: ManagerBasedRLEnv) -> torch.Tensor:
++    """Penalize the rate of change of the actions using L2 squared kernel."""
++    return torch.sum(torch.square(env.action_manager.action[:,:12] - env.action_manager.prev_action[:,:12]), dim=1)
++
++
++def feet_air_time(
++    env: ManagerBasedRLEnv, command_name: str, sensor_cfg: SceneEntityCfg, threshold: float
++) -> torch.Tensor:
++    """Reward long steps taken by the feet using L2-kernel.
++
++    This function rewards the agent for taking steps that are longer than a threshold. This helps ensure
++    that the robot lifts its feet off the ground and takes steps. The reward is computed as the sum of
++    the time for which the feet are in the air.
++
++    If the commands are small (i.e. the agent is not supposed to take a step), then the reward is zero.
++    """
++    # extract the used quantities (to enable type-hinting)
++    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
++    # compute the reward
++    first_contact = contact_sensor.compute_first_contact(env.step_dt)[:, sensor_cfg.body_ids]
++    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
++    reward = torch.sum((last_air_time - threshold) * first_contact, dim=1)
++    # no reward for zero command
++    reward *= torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.1
++    return reward
++    
++def feet_height(
++    env: ManagerBasedRLEnv,
++    command_name: str,
++    asset_cfg: SceneEntityCfg,
++    target_height: float,
++    tanh_mult: float,
++) -> torch.Tensor:
++    """Reward the swinging feet for clearing a specified height off the ground"""
++    asset: RigidObject = env.scene[asset_cfg.name]
++    foot_z_target_error = torch.square(asset.data.body_pos_w[:, asset_cfg.body_ids, 2] - target_height)
++    foot_velocity_tanh = torch.tanh(
++        tanh_mult * torch.linalg.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2)
++    )
++    reward = torch.sum(foot_z_target_error * foot_velocity_tanh, dim=1)
++    # no reward for zero command
++    reward *= torch.linalg.norm(env.command_manager.get_command(command_name), dim=1) > 0.1
++    reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b[:, 2], 0, 0.7) / 0.7
++    if PLAY:
++        with open('data/feet_height.txt', 'a') as f:
++            height = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]
++            tensor_cpu = height.detach().cpu() 
++            tensor_str = np.array2string(tensor_cpu.numpy(), precision=4, separator=', ', suppress_small=True)
++            f.write(tensor_str + '\n')
++
++    return reward
++
++
++
++def feet_height_body(
++    env: ManagerBasedRLEnv,
++    command_name: str,
++    asset_cfg: SceneEntityCfg,
++    target_height: float,
++    tanh_mult: float,
++) -> torch.Tensor:
++    """Reward the swinging feet for clearing a specified height off the ground"""
++    asset: RigidObject = env.scene[asset_cfg.name]
++    cur_footpos_translated = asset.data.body_pos_w[:, asset_cfg.body_ids, :] - asset.data.root_pos_w[:, :].unsqueeze(1)
++    footpos_in_body_frame = torch.zeros(env.num_envs, len(asset_cfg.body_ids), 3, device=env.device)
++    cur_footvel_translated = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :] - asset.data.root_lin_vel_w[:, :].unsqueeze(1)
++    footvel_in_body_frame = torch.zeros(env.num_envs, len(asset_cfg.body_ids), 3, device=env.device)
++
++    for i in range(len(asset_cfg.body_ids)):
++        footpos_in_body_frame[:, i, :] = math_utils.quat_apply_inverse(asset.data.root_quat_w, cur_footpos_translated[:, i, :])
++        footvel_in_body_frame[:, i, :] = math_utils.quat_apply_inverse(asset.data.root_quat_w, cur_footvel_translated[:, i, :])
++
++    foot_z_target_error = torch.square(footpos_in_body_frame[:, :, 2] - target_height).view(env.num_envs, -1)
++    foot_velocity_tanh = torch.tanh(tanh_mult * torch.norm(footvel_in_body_frame[:, :, :2], dim=2))
++    reward = torch.sum(foot_z_target_error * foot_velocity_tanh, dim=1)
++    reward *= torch.linalg.norm(env.command_manager.get_command(command_name), dim=1) > 0.1
++    reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b[:, 2], 0, 0.7) / 0.7
++    return reward
++
++def standing_feet_contact_force(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, command_name: str,
++                                force_threshold: float, command_threshold: float) -> torch.Tensor:
++    # Extract the relevant sensor and command
++    contact_sensor = env.scene.sensors[sensor_cfg.name]
++    contact_force = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, :].norm(dim=-1)  # shape: (N, B)
++    command = torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1)  # shape: (N,)
++
++    # Check conditions
++    is_small_command = command < command_threshold
++
++    force = torch.min(contact_force[:, 0] ,contact_force[:, 1])
++    force = torch.clamp(force,min=0.0,max =force_threshold)
++    rewards = torch.where(is_small_command, 
++                          2.0* (force), 
++                          force)
++    return rewards
++
++
++def flat_orientation_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    """Penalize non-flat base orientation using L2 squared kernel.
++
++    This is computed by penalizing the xy-components of the projected gravity vector.
++    """
++    # extract the used quantities (to enable type-hinting)
++    asset: RigidObject = env.scene[asset_cfg.name]
++    return torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
++
++def hip_action_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
++    """Penalize the actions using L2 squared kernel."""
++    return torch.sum(torch.square(env.action_manager.action[:, [0, 3 , 6, 9]]), dim=1)
++
++
++# ================================================================================================================================
++
++
++def position_command_error(env: ManagerBasedRLEnv, command_name: str, asset_cfg: SceneEntityCfg) -> torch.Tensor:
++    """Penalize tracking of the position error using L2-norm.
++
++    The function computes the position error between the desired position (from the command) and the
++    current position of the asset's body (in world frame). The position error is computed as the L2-norm
++    of the difference between the desired and current positions.
++    """
++    # extract the asset (to enable type hinting)
++    asset: RigidObject = env.scene[asset_cfg.name]
++    command = env.command_manager.get_command(command_name)
++    # obtain the desired and current positions
++    des_pos_b = command[:, :3]
++    des_pos_w, _ = combine_frame_transforms(asset.data.root_state_w[:, :3], asset.data.root_state_w[:, 3:7], des_pos_b)
++    curr_pos_w = asset.data.body_state_w[:, asset_cfg.body_ids[0], :3]  # type: ignore
++    return torch.norm(curr_pos_w - des_pos_w, dim=1)
++
++
++def position_command_error_tanh(
++    env: ManagerBasedRLEnv, std: float, command_name: str, asset_cfg: SceneEntityCfg
++) -> torch.Tensor:
++    """Reward tracking of the position using the tanh kernel.
++
++    The function computes the position error between the desired position (from the command) and the
++    current position of the asset's body (in world frame) and maps it with a tanh kernel.
++    """
++    # extract the asset (to enable type hinting)
++    asset: RigidObject = env.scene[asset_cfg.name]
++    command = env.command_manager.get_command(command_name)
++    # obtain the desired and current positions
++    des_pos_b = command[:, :3]
++    des_pos_w, _ = combine_frame_transforms(asset.data.root_state_w[:, :3], asset.data.root_state_w[:, 3:7], des_pos_b)
++    curr_pos_w = asset.data.body_state_w[:, asset_cfg.body_ids[0], :3]  # type: ignore
++    distance = torch.norm(curr_pos_w - des_pos_w, dim=1)
++    return 1 - torch.tanh(distance / std)
++
++
++def orientation_command_error(env: ManagerBasedRLEnv, command_name: str, asset_cfg: SceneEntityCfg) -> torch.Tensor:
++    """Penalize tracking orientation error using shortest path.
++
++    The function computes the orientation error between the desired orientation (from the command) and the
++    current orientation of the asset's body (in world frame). The orientation error is computed as the shortest
++    path between the desired and current orientations.
++    """
++    # extract the asset (to enable type hinting)
++    asset: RigidObject = env.scene[asset_cfg.name]
++    command = env.command_manager.get_command(command_name)
++    # obtain the desired and current orientations
++    des_quat_b = command[:, 3:7]
++    des_quat_w = quat_mul(asset.data.root_state_w[:, 3:7], des_quat_b)
++    curr_quat_w = asset.data.body_state_w[:, asset_cfg.body_ids[0], 3:7]  # type: ignore
++    return quat_error_magnitude(curr_quat_w, des_quat_w)
++
++
++
++
++def is_alive(env: ManagerBasedRLEnv) -> torch.Tensor:
++    """Reward for being alive."""
++    return (~env.termination_manager.terminated).float()
++
++
++def is_terminated(env: ManagerBasedRLEnv) -> torch.Tensor:
++    """Penalize terminated episodes that don't correspond to episodic timeouts."""
++    return env.termination_manager.terminated.float()
++
++
++class is_terminated_term(ManagerTermBase):
++    """Penalize termination for specific terms that don't correspond to episodic timeouts.
++
++    The parameters are as follows:
++
++    * attr:`term_keys`: The termination terms to penalize. This can be a string, a list of strings
++      or regular expressions. Default is ".*" which penalizes all terminations.
++
++    The reward is computed as the sum of the termination terms that are not episodic timeouts.
++    This means that the reward is 0 if the episode is terminated due to an episodic timeout. Otherwise,
++    if two termination terms are active, the reward is 2.
++    """
++
++    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
++        # initialize the base class
++        super().__init__(cfg, env)
++        # find and store the termination terms
++        term_keys = cfg.params.get("term_keys", ".*")
++        self._term_names = env.termination_manager.find_terms(term_keys)
++
++    def __call__(self, env: ManagerBasedRLEnv, term_keys: str | list[str] = ".*") -> torch.Tensor:
++        # Return the unweighted reward for the termination terms
++        reset_buf = torch.zeros(env.num_envs, device=env.device)
++        for term in self._term_names:
++            # Sums over terminations term values to account for multiple terminations in the same step
++            reset_buf += env.termination_manager.get_term(term)
++
++        return (reset_buf * (~env.termination_manager.time_outs)).float()
++
++
++"""
++Root penalties.
++"""
++
++
++
++
++
++def base_height_l2(
++    env: ManagerBasedRLEnv, target_height: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
++) -> torch.Tensor:
++    """Penalize asset height from its target using L2 squared kernel.
++
++    Note:
++        Currently, it assumes a flat terrain, i.e. the target height is in the world frame.
++    """
++    # extract the used quantities (to enable type-hinting)
++    asset: RigidObject = env.scene[asset_cfg.name]
++    # TODO: Fix this for rough-terrain.
++    curr_height = torch.clamp(asset.data.root_pos_w[:, 2], max=0.4)
++    return torch.square(curr_height - target_height)
++
++
++def body_lin_acc_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    """Penalize the linear acceleration of bodies using L2-kernel."""
++    asset: Articulation = env.scene[asset_cfg.name]
++    return torch.sum(torch.norm(asset.data.body_lin_acc_w[:, asset_cfg.body_ids, :], dim=-1), dim=1)
++
++
++"""
++Joint penalties.
++"""
++
++
++def joint_torques_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    """Penalize joint torques applied on the articulation using L2 squared kernel.
+ 
+-def joint_pos_target_l2(env: ManagerBasedRLEnv, target: float, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+-    """Penalize joint position deviation from a target value."""
++    NOTE: Only the joints configured in :attr:`asset_cfg.joint_ids` will have their joint torques contribute to the term.
++    """
+     # extract the used quantities (to enable type-hinting)
+     asset: Articulation = env.scene[asset_cfg.name]
+-    # wrap the joint positions to (-pi, pi)
+-    joint_pos = wrap_to_pi(asset.data.joint_pos[:, asset_cfg.joint_ids])
++    return torch.sum(torch.square(asset.data.applied_torque[:, asset_cfg.joint_ids]), dim=1)
++
++
++
++
++def joint_vel_l1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
++    """Penalize joint velocities on the articulation using an L1-kernel."""
++    # extract the used quantities (to enable type-hinting)
++    asset: Articulation = env.scene[asset_cfg.name]
++    return torch.sum(torch.abs(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1)
++
++
++
++def joint_vel_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    """Penalize joint velocities on the articulation using L2 squared kernel.
++
++    NOTE: Only the joints configured in :attr:`asset_cfg.joint_ids` will have their joint velocities contribute to the term.
++    """
++    # extract the used quantities (to enable type-hinting)
++    asset: Articulation = env.scene[asset_cfg.name]
++    return torch.sum(torch.square(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1)
++
++## from Go2Arm
++def joint_vel_l2_Go1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    """Penalize joint velocities on the articulation using L2 squared kernel.
++
++    NOTE: Only the joints configured in :attr:`asset_cfg.joint_ids` will have their joint velocities contribute to the term.
++    """
++    # extract the used quantities (to enable type-hinting)
++    asset: Articulation = env.scene[asset_cfg.name]
++    arm_joint, _ = asset.find_joints([ 
++                        "widow_waist", "widow_shoulder", "widow_elbow", 
++                        "widow_forearm_roll", "widow_wrist_angle", "widow_wrist_rotate"
++                        ])
++    return torch.sum(torch.square(asset.data.joint_vel[:, arm_joint]), dim=1)
++
++
++def joint_acc_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    """Penalize joint accelerations on the articulation using L2 squared kernel.
++
++    NOTE: Only the joints configured in :attr:`asset_cfg.joint_ids` will have their joint accelerations contribute to the term.
++    """
++    # extract the used quantities (to enable type-hinting)
++    asset: Articulation = env.scene[asset_cfg.name]
++
++    return torch.sum(torch.square(asset.data.joint_acc[:, asset_cfg.joint_ids]), dim=1)
++
++def leg_action_smoothness_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
++    """Penalize large instantaneous changes in the network action output"""
++    return torch.linalg.norm((env.action_manager.action[:, :12] - env.action_manager.prev_action[:, :12]), dim=1)
++
++
++
++def joint_deviation_l1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    """Penalize joint positions that deviate from the default one."""
++    # extract the used quantities (to enable type-hinting)
++    asset: Articulation = env.scene[asset_cfg.name]
++    # compute out of limits constraints
++    angle = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
++    return torch.sum(torch.abs(angle), dim=1)
++
++
++def joint_pos_limits(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    """Penalize joint positions if they cross the soft limits.
++
++    This is computed as a sum of the absolute value of the difference between the joint position and the soft limits.
++    """
++    # extract the used quantities (to enable type-hinting)
++    asset: Articulation = env.scene[asset_cfg.name]
++    # compute out of limits constraints
++    out_of_limits = -(
++        asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids, 0]
++    ).clip(max=0.0)
++    out_of_limits += (
++        asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids, 1]
++    ).clip(min=0.0)
++    return torch.sum(out_of_limits, dim=1)
++
++
++def joint_vel_limits(
++    env: ManagerBasedRLEnv, soft_ratio: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
++) -> torch.Tensor:
++    """Penalize joint velocities if they cross the soft limits.
++
++    This is computed as a sum of the absolute value of the difference between the joint velocity and the soft limits.
++
++    Args:
++        soft_ratio: The ratio of the soft limits to be used.
++    """
++    # extract the used quantities (to enable type-hinting)
++    asset: Articulation = env.scene[asset_cfg.name]
++    # compute out of limits constraints
++    out_of_limits = (
++        torch.abs(asset.data.joint_vel[:, asset_cfg.joint_ids])
++        - asset.data.soft_joint_vel_limits[:, asset_cfg.joint_ids] * soft_ratio
++    )
++    # clip to max error = 1 rad/s per joint to avoid huge penalties
++    out_of_limits = out_of_limits.clip_(min=0.0, max=1.0)
++    return torch.sum(out_of_limits, dim=1)
++
++## from Go2ARM
++def joint_arm_energy_abs_sum(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    asset: Articulation = env.scene[asset_cfg.name]
++
++    arm_joint, _ = asset.find_joints([ 
++                        "widow_waist", "widow_shoulder", "widow_elbow", 
++                        "widow_forearm_roll", "widow_wrist_angle", "widow_wrist_rotate"
++                        ])
++    return torch.sum(torch.abs(asset.data.applied_torque[:,arm_joint] * asset.data.joint_vel[:, arm_joint]), dim=1)
++
++## from Go2ARM
++def joint_leg_energy_abs_sum(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    asset: Articulation = env.scene[asset_cfg.name]
++    leg_joint, _ = asset.find_joints([ "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
++                        "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
++                        "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
++                        "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint"
++                        ])
++    return torch.sum(torch.abs(asset.data.applied_torque[:, leg_joint] * asset.data.joint_vel[:, leg_joint]), dim=1)
++
++
++"""
++Action penalties.
++"""
++
++
++def applied_torque_limits(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    """Penalize applied torques if they cross the limits.
++
++    This is computed as a sum of the absolute value of the difference between the applied torques and the limits.
++
++    .. caution::
++        Currently, this only works for explicit actuators since we manually compute the applied torques.
++        For implicit actuators, we currently cannot retrieve the applied torques from the physics engine.
++    """
++    # extract the used quantities (to enable type-hinting)
++    asset: Articulation = env.scene[asset_cfg.name]
++    # compute out of limits constraints
++    # TODO: We need to fix this to support implicit joints.
++    out_of_limits = torch.abs(
++        asset.data.applied_torque[:, asset_cfg.joint_ids] - asset.data.computed_torque[:, asset_cfg.joint_ids]
++    )
++    return torch.sum(out_of_limits, dim=1)
++
++
++def action_rate_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
++    """Penalize the rate of change of the actions using L2 squared kernel."""
++    return torch.sum(torch.square(env.action_manager.action - env.action_manager.prev_action), dim=1)
++
++
++
++def action_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
++    """Penalize the actions using L2 squared kernel."""
++    return torch.sum(torch.square(env.action_manager.action), dim=1)
++
++## from Go2ARM
++
++
++
++"""
++Contact sensor.
++"""
++
++
++def undesired_contacts(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
++    """Penalize undesired contacts as the number of violations that are above a threshold."""
++    # extract the used quantities (to enable type-hinting)
++    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
++    # check if contact force is above threshold
++    net_contact_forces = contact_sensor.data.net_forces_w_history
++    is_contact = torch.max(torch.norm(net_contact_forces[:, :, sensor_cfg.body_ids], dim=-1), dim=1)[0] > threshold
++    # sum over contacts for each environment
++    return torch.sum(is_contact, dim=1)
++
++
++def contact_forces(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
++    """Penalize contact forces as the amount of violations of the net contact force."""
++    # extract the used quantities (to enable type-hinting)
++    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
++    net_contact_forces = contact_sensor.data.net_forces_w_history
++    # compute the violation
++    violation = torch.max(torch.norm(net_contact_forces[:, :, sensor_cfg.body_ids], dim=-1), dim=1)[0] - threshold
++    # compute the penalty
++    return torch.sum(violation.clip(min=0.0), dim=1)
++
++
++## from Go2ARM
++def contact_forces_z(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
++    """
++    Penalize contact forces specifically for the z-axis if the net contact force exceeds a threshold.
++    """
++    # Extract the contact sensor data
++    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
++    net_contact_forces = contact_sensor.data.net_forces_w_history  # [batch_size, time_steps, body_parts, 3]
++
++    # Extract the z-axis contact force
++    z_contact_forces = net_contact_forces[:, :, sensor_cfg.body_ids, 2]  # z-axis is the third dimension
++
++    # Compute the violation (force exceeding the threshold)
++    violation = torch.max(z_contact_forces, dim=1)[0] - threshold
++
++    # Compute the penalty (sum of violations)
++    return torch.sum(violation.clip(min=0.0), dim=1)
++
++"""
++Velocity-tracking rewards.
++"""
++
++
++
++
++
++
++
++
++
++
++
++def feet_air_time_positive_biped(env, command_name: str, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
++    """Reward long steps taken by the feet for bipeds.
++
++    This function rewards the agent for taking steps up to a specified threshold and also keep one foot at
++    a time in the air.
++
++    If the commands are small (i.e. the agent is not supposed to take a step), then the reward is zero.
++    """
++    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+     # compute the reward
+-    return torch.sum(torch.square(joint_pos - target), dim=1)
++    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
++    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
++    in_contact = contact_time > 0.0
++    in_mode_time = torch.where(in_contact, contact_time, air_time)
++    single_stance = torch.sum(in_contact.int(), dim=1) == 1
++    reward = torch.min(torch.where(single_stance.unsqueeze(-1), in_mode_time, 0.0), dim=1)[0]
++    reward = torch.clamp(reward, max=threshold)
++    # no reward for zero command
++    reward *= torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.1
++    return reward
++
++
++def feet_slide(env, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
++    """Penalize feet sliding.
++
++    This function penalizes the agent for sliding its feet on the ground. The reward is computed as the
++    norm of the linear velocity of the feet multiplied by a binary contact sensor. This ensures that the
++    agent is penalized only when the feet are in contact with the ground.
++    """
++    # Penalize feet sliding
++    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
++    contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0
++    asset = env.scene[asset_cfg.name]
++    body_vel = asset.data.body_lin_vel_w[:, sensor_cfg.body_ids, :2]
++    reward = torch.sum(body_vel.norm(dim=-1) * contacts, dim=1)
++    return reward
++
++
++def track_lin_vel_xy_yaw_frame_exp(
++    env, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
++) -> torch.Tensor:
++    """Reward tracking of linear velocity commands (xy axes) in the gravity aligned robot frame using exponential kernel."""
++    # extract the used quantities (to enable type-hinting)
++    asset = env.scene[asset_cfg.name]
++    vel_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3])
++    lin_vel_error = torch.sum(
++        torch.square(env.command_manager.get_command(command_name)[:, :2] - vel_yaw[:, :2]), dim=1
++    )
++    return torch.exp(-lin_vel_error / std**2)
++
++
++def track_ang_vel_z_world_exp(
++    env, command_name: str, std: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
++) -> torch.Tensor:
++    """Reward tracking of angular velocity commands (yaw) in world frame using exponential kernel."""
++    # extract the used quantities (to enable type-hinting)
++    asset = env.scene[asset_cfg.name]
++    ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_w[:, 2])
++    return torch.exp(-ang_vel_error / std**2)
