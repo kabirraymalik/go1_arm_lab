@@ -7,6 +7,8 @@ from go1_arm_lab.assets.widowgo1 import WIDOW_GO1_CFG
 
 @configclass
 class Go1ArmRoughEnvCfg(LocomotionVelocityEnvCfg):
+    # params for new rewards here
+    foot_link_name = ".*_foot"
     def __post_init__(self):
         # post init of parent
         super().__post_init__()
@@ -66,6 +68,12 @@ class Go1ArmRoughEnvCfg(LocomotionVelocityEnvCfg):
         self.rewards.action_smoothness.weight = -0.02
         self.rewards.height_reward.weight = -2.0
         self.rewards.flat_orientation_l2.weight = -1.0
+
+        # new rewards added: 
+        self.rewards.feet_air_time_variance.weight = -2.0 #-1.0
+        self.rewards.feet_air_time_variance.params["sensor_cfg"].body_names = [self.foot_link_name]
+        self.rewards.feet_gait.weight = 1.0 #0.5
+        self.rewards.feet_gait.params["synced_feet_pair_names"] = (("FL_foot", "RR_foot"), ("FR_foot", "RL_foot"))
 
 
 @configclass
