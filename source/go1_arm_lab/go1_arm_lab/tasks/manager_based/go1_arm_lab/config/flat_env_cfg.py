@@ -53,7 +53,7 @@ class Go1ArmFlatEnvCfg(LocomotionVelocityEnvCfg):
         self.rewards.end_effector_position_tracking.weight = 3.0
         self.rewards.end_effector_orientation_tracking.weight = -2.0
         self.rewards.end_effector_action_rate.weight = -0.01 #-0.005 
-        self.rewards.end_effector_action_smoothness.weight = -0.04 #-0.02
+        self.rewards.end_effector_action_smoothness.weight = -0.1 #-0.02
         
         # leg
         self.rewards.tracking_lin_vel_x_l1.weight = 3.5

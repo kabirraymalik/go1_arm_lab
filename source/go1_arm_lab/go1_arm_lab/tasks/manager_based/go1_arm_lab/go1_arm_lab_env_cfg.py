@@ -401,7 +401,7 @@ class RewardsCfg:
 
     end_effector_action_rate = RewTerm(func=mdp.action_rate_l2_arm, weight=-0.005)
 
-    end_effector_action_smoothness = RewTerm(func=mdp.arm_action_smoothness_penalty, weight=-0.1) #-0.02
+    end_effector_action_smoothness = RewTerm(func=mdp.arm_action_smoothness_penalty, weight=-0.02) 
 
     # more rewards
     # end_effector_xxx = xxx
