@@ -223,7 +223,37 @@ class CommandsCfg:
     #         orn_gamma=(-0.42 * np.pi, 0.42 * np.pi),
     #     ),
     # )
-    
+    ee_pose = mdp.HemispherePoseCommandCfg(
+        asset_name="robot",
+        body_name="wx250s_gripper_link",
+        resampling_time_range=(6.0, 8.0),  # tune as needed
+        debug_vis=True,
+        ranges_init=mdp.HemispherePoseCommandCfg.Ranges(
+            pos_l=(0.45, 0.50),
+            pos_p=(-0.05 * np.pi, 0.05 * np.pi),
+            pos_y=(-0.05 * np.pi, 0.05 * np.pi),
+            orn_alpha=(-0.05 * np.pi, 0.05 * np.pi),
+            orn_beta=(-0.05 * np.pi, 0.05 * np.pi),
+            orn_gamma=(-0.05 * np.pi, 0.05 * np.pi),
+        ),
+        ranges=mdp.HemispherePoseCommandCfg.Ranges(
+            pos_l=(0.20, 0.70),
+            pos_p=(-0.45 * np.pi, 0.45 * np.pi),
+            pos_y=(-0.50 * np.pi, 0.50 * np.pi),
+            orn_alpha=(-0.45 * np.pi, 0.45 * np.pi),
+            orn_beta=(-0.33 * np.pi, 0.33 * np.pi),
+            orn_gamma=(-0.42 * np.pi, 0.42 * np.pi),
+        ),
+        ranges_final=mdp.HemispherePoseCommandCfg.Ranges(
+            pos_l=(0.35, 0.55),
+            pos_p=(-0.20 * np.pi, 0.20 * np.pi),
+            pos_y=(-0.25 * np.pi, 0.25 * np.pi),
+            orn_alpha=(-0.20 * np.pi, 0.20 * np.pi),
+            orn_beta=(-0.15 * np.pi, 0.15 * np.pi),
+            orn_gamma=(-0.20 * np.pi, 0.20 * np.pi),
+        ),
+    )
+    """
     ee_pose = mdp.command_cfg.UniformPoseCommandCfg(
         asset_name="robot",
         body_name="wx250s_gripper_link",
@@ -256,7 +286,7 @@ class CommandsCfg:
             yaw=(-0.0, 0.0),
         ),
     )
-
+    """
     base_velocity = mdp.command_cfg.UniformVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=(10.0, 10.0),
@@ -371,7 +401,7 @@ class RewardsCfg:
 
     end_effector_action_rate = RewTerm(func=mdp.action_rate_l2_arm, weight=-0.005)
 
-    end_effector_action_smoothness = RewTerm(func=mdp.arm_action_smoothness_penalty, weight=-0.02)
+    end_effector_action_smoothness = RewTerm(func=mdp.arm_action_smoothness_penalty, weight=-0.1) #-0.02
 
     # more rewards
     # end_effector_xxx = xxx
