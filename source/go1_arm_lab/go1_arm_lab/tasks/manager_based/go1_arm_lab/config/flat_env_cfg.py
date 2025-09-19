@@ -40,13 +40,13 @@ class Go1ArmFlatEnvCfg(LocomotionVelocityEnvCfg):
         # position command 
         self.commands.ee_pose.curriculum_coeff = 5000
         # init
-        self.commands.ee_pose.ranges_init.pos_x = (0.45, 0.5)
-        self.commands.ee_pose.ranges_init.pos_y = (-0.05, 0.05)
-        self.commands.ee_pose.ranges_init.pos_z = (0.45, 0.5)
+        #self.commands.ee_pose.ranges_init.pos_x = (0.45, 0.5)
+        #self.commands.ee_pose.ranges_init.pos_y = (-0.05, 0.05)
+        #self.commands.ee_pose.ranges_init.pos_z = (0.45, 0.5)
         # final
-        self.commands.ee_pose.ranges_final.pos_x = (0.4, 0.65)
-        self.commands.ee_pose.ranges_final.pos_y = (-0.35, 0.35)
-        self.commands.ee_pose.ranges_final.pos_z = (0.15, 0.6)
+        #self.commands.ee_pose.ranges_final.pos_x = (0.4, 0.65)
+        #self.commands.ee_pose.ranges_final.pos_y = (-0.35, 0.35)
+        #self.commands.ee_pose.ranges_final.pos_z = (0.15, 0.6)
 
         # reward weight
         # arm
