@@ -18,7 +18,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 import isaaclab.terrains as terrain_gen
-
+import numpy as np
 
 import go1_arm_lab.tasks.manager_based.go1_arm_lab.mdp as mdp
 
@@ -208,6 +208,21 @@ class EventCfg:
 class CommandsCfg:
     """Command specifications for the MDP."""
     ## Go2ARM
+
+    # ee_pose = mdp.HemispherePoseCommandCfg(
+    #     asset_name="robot",
+    #     body_name="wx250s_ee_gripper_link",
+    #     resampling_time_range=(8.0, 10.0), # need tune
+    #     debug_vis=True,
+    #     ranges=mdp.HemispherePoseCommandCfg.Ranges(
+    #         pos_l=(0.2, 0.7),
+    #         pos_p=(-0.45 * np.pi, 0.45 * np.pi),
+    #         pos_y=(-0.50 * np.pi, 0.50 * np.pi),
+    #         orn_alpha=(-0.45 * np.pi, 0.45 * np.pi),
+    #         orn_beta=(-0.33 * np.pi, 0.33 * np.pi),
+    #         orn_gamma=(-0.42 * np.pi, 0.42 * np.pi),
+    #     ),
+    # )
     
     ee_pose = mdp.command_cfg.UniformPoseCommandCfg(
         asset_name="robot",
