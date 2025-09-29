@@ -223,11 +223,11 @@ class CommandsCfg:
     #         orn_gamma=(-0.42 * np.pi, 0.42 * np.pi),
     #     ),
     # )
-    ee_pose = mdp.HemispherePoseCommandCfg(
-        asset_name="robot",
-        body_name="wx250s_gripper_link",
-        resampling_time_range=(6.0, 8.0),  # tune as needed
-        debug_vis=True,
+    #ee_pose = mdp.HemispherePoseCommandCfg(
+    #    asset_name="robot",
+    #    body_name="wx250s_gripper_link",
+    #    resampling_time_range=(6.0, 8.0),  # tune as needed
+    #    debug_vis=True,
         
     #    ranges_init=mdp.HemispherePoseCommandCfg.Ranges(
     #        pos_l=(0.45, 0.50),
@@ -238,14 +238,14 @@ class CommandsCfg:
     #        orn_gamma=(-0.05 * np.pi, 0.05 * np.pi),
     #    ),
         
-        ranges=mdp.HemispherePoseCommandCfg.Ranges(
-            pos_l=(0.20, 0.70),
-            pos_p=(-0.45 * np.pi, 0.45 * np.pi),
-            pos_y=(-0.50 * np.pi, 0.50 * np.pi),
-            orn_alpha=(-0.45 * np.pi, 0.45 * np.pi),
-            orn_beta=(-0.33 * np.pi, 0.33 * np.pi),
-            orn_gamma=(-0.42 * np.pi, 0.42 * np.pi),
-        ),
+    #    ranges=mdp.HemispherePoseCommandCfg.Ranges(
+    #        pos_l=(0.20, 0.70),
+    #        pos_p=(-0.45 * np.pi, 0.45 * np.pi),
+    #        pos_y=(-0.50 * np.pi, 0.50 * np.pi),
+    #        orn_alpha=(-0.45 * np.pi, 0.45 * np.pi),
+    #        orn_beta=(-0.33 * np.pi, 0.33 * np.pi),
+    #        orn_gamma=(-0.42 * np.pi, 0.42 * np.pi),
+    #    ),
     
     #    ranges_final=mdp.HemispherePoseCommandCfg.Ranges(
     #        pos_l=(0.35, 0.55),
@@ -255,7 +255,112 @@ class CommandsCfg:
     #        orn_beta=(-0.15 * np.pi, 0.15 * np.pi),
     #        orn_gamma=(-0.20 * np.pi, 0.20 * np.pi),
     #    ),    
-    )
+    #)
+    ee_pose = mdp.HemispherePoseCommandCfg(
+    asset_name="robot",
+    body_name="wx250s_gripper_link",
+    resampling_time_range=(6.0, 8.0),
+    debug_vis=True,
+
+    # keep sphere center aligned with base (same geometry used by your sampler)
+    sphere_center=mdp.HemispherePoseCommandCfg.SphereCenter(
+        x_offset=0.0,
+        y_offset=0.0,
+        z_invariant_offset=0.37,   # your previous default; okay to keep
+    ),
+
+    # ---- Initial (tight) ----
+    ranges_init=mdp.HemispherePoseCommandCfg.Ranges(
+        # x ∈ [0.45, 0.50], y ∈ [−0.05, 0.05], z ∈ [0.35, 0.40]
+        # Derived spherical:
+        #   pos_y (azimuth) within ~±atan(0.05/0.45) ≈ ±0.11 rad
+        #   r_xy = l*cos(p) ∈ [~0.452, ~0.503]
+        #   l ∈ [~0.57, ~0.65], p ∈ [~0.61, ~0.72] rad
+        pos_l=(0.57, 0.65),
+        pos_p=(0.61, 0.72),          # polar (pitch), rad
+        pos_y=(-0.11, 0.11),         # azimuth (yaw), rad
+
+        # Orientation: your init had roll=pitch=yaw ≈ 0
+        orn_alpha=(0.0, 0.0),        # roll
+        orn_beta=(0.0, 0.0),         # pitch
+        orn_gamma=(0.0, 0.0),        # yaw
+    ),
+
+    # ---- Default (training) ----
+    ranges=mdp.HemispherePoseCommandCfg.Ranges(
+        # To stay inside x∈[0.40,0.60], y∈[−0.35,0.35]:
+        # pick azimuth narrower than ±0.52 rad (~±30°) and r_xy ∈ [0.46, 0.60]
+        # Z ∈ [0.10, 0.55] satisfied with p ∈ [0.35, 0.90], l ∈ [0.46, 0.70]
+        pos_l=(0.46, 0.70),
+        pos_p=(0.35, 0.90),          # rad
+        pos_y=(-0.52, 0.52),         # rad
+
+        # Match your small-orientation spreads (roll≈0, pitch/yaw ±π/9)
+        orn_alpha=(0.0, 0.0),
+        orn_beta=(-np.pi/9, np.pi/9),
+        orn_gamma=(-np.pi/9, np.pi/9),
+    ),
+
+    # ---- Final (same box as your ranges_final) ----
+    ranges_final=mdp.HemispherePoseCommandCfg.Ranges(
+        # Keep the same envelope as default to remain equivalent to your final box.
+        # (Optionally, you can tighten slightly; shown here we keep it equal.)
+        pos_l=(0.46, 0.70),
+        pos_p=(0.35, 0.90),
+        pos_y=(-0.52, 0.52),
+
+        orn_alpha=(0.0, 0.0),
+        orn_beta=(-np.pi/9, np.pi/9),
+        orn_gamma=(-np.pi/9, np.pi/9),
+    ),
+)
+
+    # ee_pose = mdp.HemispherePoseCommandCfg(
+    #     asset_name="robot",
+    #     body_name="wx250s_gripper_link",
+    #     resampling_time_range=(6.0, 8.0),
+    #     debug_vis=True,
+
+    #     sphere_center=mdp.HemispherePoseCommandCfg.SphereCenter(
+    #         x_offset=0.0,
+    #         y_offset=0.0,
+    #         z_invariant_offset=0.37,   # keep as before
+    #     ),
+
+    #     # ---- Initial (tight; same as before so training starts stable) ----
+    #     ranges_init=mdp.HemispherePoseCommandCfg.Ranges(
+    #         pos_l=(0.57, 0.65),
+    #         pos_p=(0.61, 0.72),          # rad
+    #         pos_y=(-0.11, 0.11),         # rad
+    #         orn_alpha=(0.0, 0.0),
+    #         orn_beta=(0.0, 0.0),
+    #         orn_gamma=(0.0, 0.0),
+    #     ),
+
+    #     # ---- Default (expanded downward reach) ----
+    #     ranges=mdp.HemispherePoseCommandCfg.Ranges(
+    #         pos_l=(0.46, 0.80),          # ↑ allow longer reach
+    #         pos_p=(-0.42, 0.90),         # ↓ allow dipping below sphere center (≈ −24°)
+    #         pos_y=(-0.52, 0.52),         # same azimuth envelope
+
+    #         # allow a bit more down-tilt while keeping yaw modest
+    #         orn_alpha=(0.0, 0.0),
+    #         orn_beta=(-0.50, 0.35),      # rad (~ −29° to +20°)
+    #         orn_gamma=(-np.pi/9, np.pi/9),
+    #     ),
+
+    #     # ---- Final (tighten slightly but keep the downward capability) ----
+    #     ranges_final=mdp.HemispherePoseCommandCfg.Ranges(
+    #         pos_l=(0.50, 0.80),
+    #         pos_p=(-0.35, 0.75),
+    #         pos_y=(-0.45, 0.45),
+
+    #         orn_alpha=(0.0, 0.0),
+    #         orn_beta=(-0.45, 0.30),
+    #         orn_gamma=(-np.pi/9, np.pi/9),
+    #     ),
+    # )
+
     """
     ee_pose = mdp.command_cfg.UniformPoseCommandCfg(
         asset_name="robot",
@@ -488,7 +593,7 @@ class RewardsCfg:
         func=mdp.standing_feet_contact_force,
         weight= 0.003,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="R.*_foot"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
             "command_name": "base_velocity",
             "force_threshold": 7.5,
             "command_threshold": 0.1,

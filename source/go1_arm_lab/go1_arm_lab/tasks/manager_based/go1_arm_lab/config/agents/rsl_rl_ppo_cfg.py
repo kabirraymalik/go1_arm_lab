@@ -59,7 +59,7 @@ class Go1ArmRslRlOnPolicyRunnerCfg(RslRlOnPolicyRunnerCfg):
 @configclass
 class Go1ArmFlatPPORunnerCfg(Go1ArmRslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
-    max_iterations = 15000
+    max_iterations = 15000 #15000
     save_interval = 1000
     experiment_name = "widowgo1_flat"
     empirical_normalization = False

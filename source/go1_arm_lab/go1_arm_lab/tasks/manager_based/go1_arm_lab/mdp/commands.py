@@ -10,7 +10,7 @@ from dataclasses import MISSING
 
 import torch
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from isaaclab.assets import Articulation
 from isaaclab.utils import configclass
@@ -24,12 +24,285 @@ from ..util.markers import SPHERE_MARKER_CFG
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
+# class HemispherePoseCommand(CommandTerm):
+
+#     cfg: HemispherePoseCommandCfg
+#     """Configuration for the command generator."""
+
+#     def __init__(self, cfg: HemispherePoseCommandCfg, env: ManagerBasedRLEnv):
+#         """Initialize the command generator class.
+
+#         Args:
+#             cfg: The configuration parameters for the command generator.
+#             env: The environment object.
+#         """
+#         # initialize the base class
+#         super().__init__(cfg, env)
+        
+#         # extract the robot and body index for which the command is generated
+#         self.robot: Articulation = env.scene[cfg.asset_name]
+
+#         self.body_idx = self.robot.find_bodies(cfg.body_name)[0][0]
+
+#         # create buffers
+#         # -- commands: (x, y, z, qw, qx, qy, qz) in root frame
+#         self.pose_command_b = torch.zeros(self.num_envs, 7, device=self.device)
+#         self.pose_command_b[:, 3] = 1.0
+#         self.pose_command_w = torch.zeros_like(self.pose_command_b)
+        
+#         # configuration constants for spherical coordinate system
+#         self.arm_base_offset = torch.tensor([
+#             cfg.sphere_center.x_offset, 
+#             cfg.sphere_center.y_offset, 
+#             cfg.sphere_center.z_invariant_offset
+#         ], device=self.device, dtype=torch.float).repeat(self.num_envs, 1)
+        
+#         # -- metrics
+#         self.metrics["position_error"] = torch.zeros(self.num_envs, device=self.device)
+#         self.metrics["orientation_error"] = torch.zeros(self.num_envs, device=self.device)
+
+#     def __str__(self) -> str:
+#         msg = "HemispherePoseCommand:\n"
+#         msg += f"\tCommand dimension: {tuple(self.command.shape[1:])}\n"
+#         msg += f"\tResampling time range: {self.cfg.resampling_time_range}\n"
+#         return msg
+
+#     """
+#     Properties
+#     """
+
+#     @property
+#     def command(self) -> torch.Tensor:
+#         """The desired pose command. Shape is (num_envs, 7).
+
+#         The first three elements correspond to the position, followed by the quaternion orientation in (w, x, y, z).
+#         """
+#         return self.pose_command_b
+
+#     """
+#     Implementation specific functions.
+#     """
+
+#     def _update_metrics(self):
+#         # transform command from base frame to simulation world frame
+#         self.pose_command_w[:, :3], self.pose_command_w[:, 3:] = combine_frame_transforms(
+#             self.robot.data.root_pos_w,
+#             self.robot.data.root_quat_w,
+#             self.pose_command_b[:, :3],
+#             self.pose_command_b[:, 3:],
+#         )
+#         # compute the error
+#         pos_error, rot_error = compute_pose_error(
+#             self.pose_command_w[:, :3],
+#             self.pose_command_w[:, 3:],
+#             self.robot.data.body_pos_w[:, self.body_idx],
+#             self.robot.data.body_quat_w[:, self.body_idx],
+#         )
+#         self.metrics["position_error"] = torch.norm(pos_error, dim=-1)
+#         self.metrics["orientation_error"] = torch.norm(rot_error, dim=-1)
+
+#     def _resample_command(self, env_ids: Sequence[int]):
+#         """Sample new pose targets in spherical coordinates and convert to cartesian."""
+#         # Create random generator for sampling
+#         r = torch.empty(len(env_ids), device=self.device)
+        
+#         # Sample spherical coordinates (l, pitch, yaw)
+#         sphere_coords = torch.zeros(len(env_ids), 3, device=self.device)
+#         sphere_coords[:, 0] = r.uniform_(*self.cfg.ranges.pos_l)  # radial distance
+#         sphere_coords[:, 1] = r.uniform_(*self.cfg.ranges.pos_p)  # polar angle (pitch)
+#         sphere_coords[:, 2] = r.uniform_(*self.cfg.ranges.pos_y)  # azimuthal angle (yaw)
+        
+#         # Convert spherical coordinates to cartesian coordinates
+#         cart_coords = sphere2cart(sphere_coords)
+        
+#         # Get the spherical coordinate system center in base frame
+#         base_yaw_quat = self._get_base_yaw_quat()[env_ids]
+#         sphere_center_world = self._get_ee_goal_spherical_center()[env_ids]
+        
+#         # Transform cartesian coordinates from sphere frame to world frame
+#         cart_coords_world_rotated = quat_apply_wxyz(base_yaw_quat, cart_coords)
+#         cart_coords_world = sphere_center_world + cart_coords_world_rotated
+        
+#         # Transform from world frame to robot base frame
+#         robot_base_pos_w = self.robot.data.root_pos_w[env_ids]
+#         robot_base_quat_w = self.robot.data.root_quat_w[env_ids]
+        
+#         # Convert world coordinates to base frame coordinates
+#         self.pose_command_b[env_ids, :3], _ = subtract_frame_transforms(
+#             robot_base_pos_w,
+#             robot_base_quat_w,
+#             cart_coords_world,
+#             torch.zeros(len(env_ids), 4, device=self.device)  # dummy quaternion
+#         )
+        
+#         # Sample orientation in spherical coordinate frame (alpha, beta, gamma correspond to roll, pitch, yaw)
+#         euler_angles_sphere = torch.zeros(len(env_ids), 3, device=self.device)
+#         euler_angles_sphere[:, 0] = r.uniform_(*self.cfg.ranges.orn_alpha)  # roll
+#         euler_angles_sphere[:, 1] = r.uniform_(*self.cfg.ranges.orn_beta)   # pitch  
+#         euler_angles_sphere[:, 2] = r.uniform_(*self.cfg.ranges.orn_gamma)  # yaw
+        
+#         # Convert euler angles to quaternion in spherical coordinate frame
+#         quat_sphere = quat_from_euler_xyz(euler_angles_sphere[:, 0], euler_angles_sphere[:, 1], euler_angles_sphere[:, 2])
+        
+#         # Transform orientation from spherical coordinate frame to world frame
+#         # The spherical coordinate frame is aligned with robot base XY projection on ground
+#         # and rotates with robot base yaw angle
+#         base_yaw_quat = self._get_base_yaw_quat()[env_ids]  # [w, x, y, z]
+        
+#         # Apply the base yaw rotation to transform from spherical coordinate frame to world frame
+#         # quat_world = base_yaw_quat * quat_sphere (rotate quat_sphere by base_yaw_quat)
+#         quat_world = quat_mul_wxyz(base_yaw_quat, quat_sphere)
+        
+#         # Transform from world frame to robot base frame
+#         robot_base_pos_w = self.robot.data.root_pos_w[env_ids]
+#         robot_base_quat_w = self.robot.data.root_quat_w[env_ids]
+        
+#         # Convert world orientation to base frame orientation
+#         _, self.pose_command_b[env_ids, 3:] = subtract_frame_transforms(
+#             robot_base_pos_w,
+#             robot_base_quat_w,
+#             torch.zeros_like(robot_base_pos_w),  # dummy position
+#             quat_world
+#         )
+        
+#         # Make sure the quaternion has real part as positive
+#         if self.cfg.make_quat_unique:
+#             self.pose_command_b[env_ids, 3:] = quat_unique(self.pose_command_b[env_ids, 3:])     
+
+
+#     def _update_command(self):
+#         pass
+    
+#     def _get_ee_goal_spherical_center(self):
+#         """Get the center of the spherical coordinate system in world frame."""
+#         # Get robot base position (x, y) and use z_invariant_offset as absolute world Z coordinate
+#         center = torch.cat([
+#             self.robot.data.root_pos_w[:, :2], 
+#             torch.full((self.num_envs, 1), self.arm_base_offset[0, 2], device=self.device)
+#         ], dim=1)
+#         base_yaw_quat = self._get_base_yaw_quat()
+#         # Apply only x and y offsets, z is already set to absolute world coordinate
+#         xy_offset = torch.cat([
+#             self.arm_base_offset[:, :2],
+#             torch.zeros(self.num_envs, 1, device=self.device)
+#         ], dim=1)
+#         center = center + quat_apply_wxyz(base_yaw_quat, xy_offset)
+#         return center
+
+#     def _get_base_yaw_quat(self):
+#         """Get base yaw-only quaternion."""
+#         roll, pitch, yaw = euler_from_quat_wxyz(self.robot.data.root_quat_w)
+#         return quat_from_euler_xyz(torch.zeros_like(yaw), torch.zeros_like(yaw), yaw)
+
+#     def _set_debug_vis_impl(self, debug_vis: bool):
+#         # create markers if necessary for the first tome
+#         if debug_vis:
+#             if not hasattr(self, "goal_pose_visualizer"):
+#                 # -- goal pose
+#                 self.goal_pose_visualizer = VisualizationMarkers(self.cfg.goal_pose_visualizer_cfg)
+#                 # -- current body pose
+#                 self.current_pose_visualizer = VisualizationMarkers(self.cfg.current_pose_visualizer_cfg)
+#             # set their visibility to true
+#             self.goal_pose_visualizer.set_visibility(True)
+#             self.current_pose_visualizer.set_visibility(True)
+#         else:
+#             if hasattr(self, "goal_pose_visualizer"):
+#                 self.goal_pose_visualizer.set_visibility(False)
+#                 self.current_pose_visualizer.set_visibility(False)
+
+#     def _debug_vis_callback(self, event):
+#         # check if robot is initialized
+#         # note: this is needed in-case the robot is de-initialized. we can't access the data
+#         if not self.robot.is_initialized:
+#             return
+#         # update the markers
+#         # -- goal pose
+#         self.goal_pose_visualizer.visualize(self.pose_command_w[:, :3], self.pose_command_w[:, 3:])
+#         # -- current body pose
+#         body_pose_w = self.robot.data.body_state_w[:, self.body_idx]
+#         self.current_pose_visualizer.visualize(body_pose_w[:, :3], body_pose_w[:, 3:7])
+
+# @configclass
+# class HemispherePoseCommandCfg(CommandTermCfg):
+#         """Configuration for the end-effector trajectory command generator."""
+
+#         class_type: type = HemispherePoseCommand
+
+#         asset_name: str = MISSING
+#         """Name of the asset in the environment for which the commands are generated."""
+
+#         body_name: str = MISSING
+#         """Name of the end-effector body in the asset for which the commands are generated."""
+
+#         @configclass
+#         class Ranges:
+#             """Uniform distribution ranges for the trajectory commands."""
+
+#             # Spherical coordinate ranges
+#             pos_l: tuple[float, float] = MISSING
+#             """Range for the spherical radial coordinate (in m)."""
+
+#             pos_p: tuple[float, float] = MISSING
+#             """Range for the spherical polar angle (in rad)."""
+
+#             pos_y: tuple[float, float] = MISSING
+#             """Range for the spherical azimuthal angle (in rad)."""
+
+#             # Orientation ranges
+#             orn_alpha: tuple[float, float] = MISSING
+#             """Range for the roll orientation (in rad)."""
+
+#             orn_beta: tuple[float, float] = MISSING
+#             """Range for the pitch orientation (in rad)."""
+
+#             orn_gamma: tuple[float, float] = MISSING
+#             """Range for the yaw orientation (in rad)."""
+
+#         ranges: Ranges = MISSING
+#         """Distribution ranges for the trajectory commands."""
+
+#         @configclass
+#         class SphereCenter:
+#             """Configuration for the spherical coordinate system center."""
+
+#             x_offset: float = 0.0
+#             """X offset from robot base to sphere center (in m)."""
+
+#             y_offset: float = 0.0
+#             """Y offset from robot base to sphere center (in m)."""
+
+#             z_invariant_offset: float = 0.37
+#             """Absolute Z coordinate of the sphere center in world frame (in m)."""
+
+#         sphere_center: SphereCenter = SphereCenter()
+#         """Configuration for the spherical coordinate system center."""
+
+#         arm_induced_pitch: float = 0.0
+#         """Additional pitch angle induced by arm configuration (in rad)."""
+        
+#         make_quat_unique: bool = True
+#         """Whether to make the quaternion unique by ensuring positive real part."""
+
+#         goal_pose_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(
+#             prim_path="/Visuals/Command/ee_goal_pose"
+#         )
+#         """The configuration for the goal pose visualization marker."""
+
+#         current_pose_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(
+#             prim_path="/Visuals/Command/ee_current_pose"
+#         )
+#         """The configuration for the current pose visualization marker."""
+
+#         # Set the scale of the visualization markers
+#         goal_pose_visualizer_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
+#         current_pose_visualizer_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
+
 class HemispherePoseCommand(CommandTerm):
 
-    cfg: HemispherePoseCommandCfg
+    cfg: "HemispherePoseCommandCfg"
     """Configuration for the command generator."""
 
-    def __init__(self, cfg: HemispherePoseCommandCfg, env: ManagerBasedRLEnv):
+    def __init__(self, cfg: "HemispherePoseCommandCfg", env: "ManagerBasedRLEnv"):
         """Initialize the command generator class.
 
         Args:
@@ -38,25 +311,32 @@ class HemispherePoseCommand(CommandTerm):
         """
         # initialize the base class
         super().__init__(cfg, env)
-        
+        self.env = env
         # extract the robot and body index for which the command is generated
         self.robot: Articulation = env.scene[cfg.asset_name]
-
         self.body_idx = self.robot.find_bodies(cfg.body_name)[0][0]
 
-        # create buffers
-        # -- commands: (x, y, z, qw, qx, qy, qz) in root frame
+        # buffers: (x, y, z, qw, qx, qy, qz) in root frame
         self.pose_command_b = torch.zeros(self.num_envs, 7, device=self.device)
         self.pose_command_b[:, 3] = 1.0
         self.pose_command_w = torch.zeros_like(self.pose_command_b)
-        
-        # configuration constants for spherical coordinate system
-        self.arm_base_offset = torch.tensor([
-            cfg.sphere_center.x_offset, 
-            cfg.sphere_center.y_offset, 
-            cfg.sphere_center.z_invariant_offset
-        ], device=self.device, dtype=torch.float).repeat(self.num_envs, 1)
-        
+
+        # spherical coord system constants
+        self.arm_base_offset = torch.tensor(
+            [
+                cfg.sphere_center.x_offset,
+                cfg.sphere_center.y_offset,
+                cfg.sphere_center.z_invariant_offset,
+            ],
+            device=self.device,
+            dtype=torch.float,
+        ).repeat(self.num_envs, 1)
+
+        # curriculum bookkeeping (kept optional and non-invasive)
+        # if env exposes a step counter and you want parity with your uniform command,
+        # you can read it during sampling; we store a default horizon if needed.
+        self._num_steps_per_env_default = int(getattr(self.cfg, "num_steps_per_env", 24))
+
         # -- metrics
         self.metrics["position_error"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["orientation_error"] = torch.zeros(self.num_envs, device=self.device)
@@ -67,24 +347,59 @@ class HemispherePoseCommand(CommandTerm):
         msg += f"\tResampling time range: {self.cfg.resampling_time_range}\n"
         return msg
 
-    """
-    Properties
-    """
-
+    # ----------------------------
+    # Properties
+    # ----------------------------
     @property
     def command(self) -> torch.Tensor:
-        """The desired pose command. Shape is (num_envs, 7).
-
-        The first three elements correspond to the position, followed by the quaternion orientation in (w, x, y, z).
-        """
+        """Desired pose command: (num_envs, 7) in base frame (x, y, z, qw, qx, qy, qz)."""
         return self.pose_command_b
 
-    """
-    Implementation specific functions.
-    """
+    # ----------------------------
+    # Internal helpers (non-invasive)
+    # ----------------------------
+    def _progress_scalar(self) -> torch.Tensor:
+        """Return a scalar s in [0, 1] for curriculum blending; 0 disables."""
+        coeff = float(getattr(self.cfg, "curriculum_coeff", 0.0) or 0.0)
+        if coeff <= 0.0:
+            return torch.tensor(0.0, device=self.device)
 
+        steps_total = float(getattr(self.env, "common_step_counter", 0))
+        steps_per_env = float(
+            getattr(self, "num_env_step", getattr(self.cfg, "num_steps_per_env", self._num_steps_per_env_default))
+        )
+        s = steps_total / (steps_per_env * coeff) if steps_per_env > 0 else 0.0
+        return torch.clamp(torch.tensor(s, device=self.device), 0.0, 1.0)
+
+    def _sample_blended_uniform(self, r: torch.Tensor, name: str) -> torch.Tensor:
+        """Sample a parameter by blending init/final ranges using the progress scalar.
+        Falls back cleanly to self.cfg.ranges if init/final not provided or coeff==0.
+        """
+        base = getattr(self.cfg.ranges, name)
+        rin = getattr(getattr(self.cfg, "ranges_init", None) or object(), name, None)
+        rfi = getattr(getattr(self.cfg, "ranges_final", None) or object(), name, None)
+        coeff = float(getattr(self.cfg, "curriculum_coeff", 0.0) or 0.0)
+
+        # sample helper
+        def _u(lohi):
+            lo, hi = lohi
+            return r.uniform_(lo, hi)
+
+        # if curriculum disabled or missing init/final → sample base range
+        if coeff <= 0.0 or (rin is None) or (rfi is None):
+            return _u(base)
+
+        # curriculum enabled: sample each then blend (matches your UniformPose pattern)
+        s = self._progress_scalar()
+        v_init = _u(rin)
+        v_final = _u(rfi)
+        return (1.0 - s) * v_init + s * v_final
+
+    # ----------------------------
+    # Implementation-specific functions
+    # ----------------------------
     def _update_metrics(self):
-        # transform command from base frame to simulation world frame
+        # transform command from base to world
         self.pose_command_w[:, :3], self.pose_command_w[:, 3:] = combine_frame_transforms(
             self.robot.data.root_pos_w,
             self.robot.data.root_quat_w,
@@ -101,108 +416,93 @@ class HemispherePoseCommand(CommandTerm):
         self.metrics["position_error"] = torch.norm(pos_error, dim=-1)
         self.metrics["orientation_error"] = torch.norm(rot_error, dim=-1)
 
-    def _resample_command(self, env_ids: Sequence[int]):
+    def _resample_command(self, env_ids: "Sequence[int]"):
         """Sample new pose targets in spherical coordinates and convert to cartesian."""
-        # Create random generator for sampling
+        # random generator
         r = torch.empty(len(env_ids), device=self.device)
-        
-        # Sample spherical coordinates (l, pitch, yaw)
+
+        # ---- sample spherical position (l, pitch, yaw) with optional curriculum blending
         sphere_coords = torch.zeros(len(env_ids), 3, device=self.device)
-        sphere_coords[:, 0] = r.uniform_(*self.cfg.ranges.pos_l)  # radial distance
-        sphere_coords[:, 1] = r.uniform_(*self.cfg.ranges.pos_p)  # polar angle (pitch)
-        sphere_coords[:, 2] = r.uniform_(*self.cfg.ranges.pos_y)  # azimuthal angle (yaw)
-        
-        # Convert spherical coordinates to cartesian coordinates
+        sphere_coords[:, 0] = self._sample_blended_uniform(r, "pos_l")
+        sphere_coords[:, 1] = self._sample_blended_uniform(r, "pos_p")
+        sphere_coords[:, 2] = self._sample_blended_uniform(r, "pos_y")
+
+        # to cartesian (sphere frame)
         cart_coords = sphere2cart(sphere_coords)
-        
-        # Get the spherical coordinate system center in base frame
+
+        # sphere center + base-yaw frame
         base_yaw_quat = self._get_base_yaw_quat()[env_ids]
         sphere_center_world = self._get_ee_goal_spherical_center()[env_ids]
-        
-        # Transform cartesian coordinates from sphere frame to world frame
+
+        # rotate by base yaw, then translate to world
         cart_coords_world_rotated = quat_apply_wxyz(base_yaw_quat, cart_coords)
         cart_coords_world = sphere_center_world + cart_coords_world_rotated
-        
-        # Transform from world frame to robot base frame
+
+        # world → base
         robot_base_pos_w = self.robot.data.root_pos_w[env_ids]
         robot_base_quat_w = self.robot.data.root_quat_w[env_ids]
-        
-        # Convert world coordinates to base frame coordinates
         self.pose_command_b[env_ids, :3], _ = subtract_frame_transforms(
             robot_base_pos_w,
             robot_base_quat_w,
             cart_coords_world,
-            torch.zeros(len(env_ids), 4, device=self.device)  # dummy quaternion
+            torch.zeros(len(env_ids), 4, device=self.device),  # dummy quaternion
         )
-        
-        # Sample orientation in spherical coordinate frame (alpha, beta, gamma correspond to roll, pitch, yaw)
-        euler_angles_sphere = torch.zeros(len(env_ids), 3, device=self.device)
-        euler_angles_sphere[:, 0] = r.uniform_(*self.cfg.ranges.orn_alpha)  # roll
-        euler_angles_sphere[:, 1] = r.uniform_(*self.cfg.ranges.orn_beta)   # pitch  
-        euler_angles_sphere[:, 2] = r.uniform_(*self.cfg.ranges.orn_gamma)  # yaw
-        
-        # Convert euler angles to quaternion in spherical coordinate frame
-        quat_sphere = quat_from_euler_xyz(euler_angles_sphere[:, 0], euler_angles_sphere[:, 1], euler_angles_sphere[:, 2])
-        
-        # Transform orientation from spherical coordinate frame to world frame
-        # The spherical coordinate frame is aligned with robot base XY projection on ground
-        # and rotates with robot base yaw angle
-        base_yaw_quat = self._get_base_yaw_quat()[env_ids]  # [w, x, y, z]
-        
-        # Apply the base yaw rotation to transform from spherical coordinate frame to world frame
-        # quat_world = base_yaw_quat * quat_sphere (rotate quat_sphere by base_yaw_quat)
+
+        # ---- sample orientation in spherical frame (alpha, beta, gamma) with optional blending
+        euler_sphere = torch.zeros(len(env_ids), 3, device=self.device)
+        euler_sphere[:, 0] = self._sample_blended_uniform(r, "orn_alpha")
+        euler_sphere[:, 1] = self._sample_blended_uniform(r, "orn_beta")
+        euler_sphere[:, 2] = self._sample_blended_uniform(r, "orn_gamma")
+
+        quat_sphere = quat_from_euler_xyz(euler_sphere[:, 0], euler_sphere[:, 1], euler_sphere[:, 2])
+
+        # spherical frame → world: rotate by base yaw
         quat_world = quat_mul_wxyz(base_yaw_quat, quat_sphere)
-        
-        # Transform from world frame to robot base frame
-        robot_base_pos_w = self.robot.data.root_pos_w[env_ids]
-        robot_base_quat_w = self.robot.data.root_quat_w[env_ids]
-        
-        # Convert world orientation to base frame orientation
+
+        # world → base
         _, self.pose_command_b[env_ids, 3:] = subtract_frame_transforms(
             robot_base_pos_w,
             robot_base_quat_w,
             torch.zeros_like(robot_base_pos_w),  # dummy position
-            quat_world
+            quat_world,
         )
-        
-        # Make sure the quaternion has real part as positive
-        if self.cfg.make_quat_unique:
-            self.pose_command_b[env_ids, 3:] = quat_unique(self.pose_command_b[env_ids, 3:])     
 
+        # normalize quaternion sign (optional)
+        if self.cfg.make_quat_unique:
+            self.pose_command_b[env_ids, 3:] = quat_unique(self.pose_command_b[env_ids, 3:])
 
     def _update_command(self):
         pass
-    
-    def _get_ee_goal_spherical_center(self):
+
+    def _get_ee_goal_spherical_center(self) -> torch.Tensor:
         """Get the center of the spherical coordinate system in world frame."""
-        # Get robot base position (x, y) and use z_invariant_offset as absolute world Z coordinate
-        center = torch.cat([
-            self.robot.data.root_pos_w[:, :2], 
-            torch.full((self.num_envs, 1), self.arm_base_offset[0, 2], device=self.device)
-        ], dim=1)
+        # base (x, y) + absolute z from config
+        center = torch.cat(
+            [
+                self.robot.data.root_pos_w[:, :2],
+                torch.full((self.num_envs, 1), self.arm_base_offset[0, 2], device=self.device),
+            ],
+            dim=1,
+        )
+        # apply only XY offsets in base-yaw frame
         base_yaw_quat = self._get_base_yaw_quat()
-        # Apply only x and y offsets, z is already set to absolute world coordinate
-        xy_offset = torch.cat([
-            self.arm_base_offset[:, :2],
-            torch.zeros(self.num_envs, 1, device=self.device)
-        ], dim=1)
+        xy_offset = torch.cat([self.arm_base_offset[:, :2], torch.zeros(self.num_envs, 1, device=self.device)], dim=1)
         center = center + quat_apply_wxyz(base_yaw_quat, xy_offset)
         return center
 
-    def _get_base_yaw_quat(self):
-        """Get base yaw-only quaternion."""
-        roll, pitch, yaw = euler_from_quat_wxyz(self.robot.data.root_quat_w)
+    def _get_base_yaw_quat(self) -> torch.Tensor:
+        """Get base yaw-only quaternion (w, x, y, z)."""
+        _, _, yaw = euler_from_quat_wxyz(self.robot.data.root_quat_w)
         return quat_from_euler_xyz(torch.zeros_like(yaw), torch.zeros_like(yaw), yaw)
 
     def _set_debug_vis_impl(self, debug_vis: bool):
-        # create markers if necessary for the first tome
+        # create markers if necessary for the first time
         if debug_vis:
             if not hasattr(self, "goal_pose_visualizer"):
                 # -- goal pose
                 self.goal_pose_visualizer = VisualizationMarkers(self.cfg.goal_pose_visualizer_cfg)
                 # -- current body pose
                 self.current_pose_visualizer = VisualizationMarkers(self.cfg.current_pose_visualizer_cfg)
-            # set their visibility to true
             self.goal_pose_visualizer.set_visibility(True)
             self.current_pose_visualizer.set_visibility(True)
         else:
@@ -211,91 +511,96 @@ class HemispherePoseCommand(CommandTerm):
                 self.current_pose_visualizer.set_visibility(False)
 
     def _debug_vis_callback(self, event):
-        # check if robot is initialized
-        # note: this is needed in-case the robot is de-initialized. we can't access the data
         if not self.robot.is_initialized:
             return
-        # update the markers
-        # -- goal pose
+        # goal pose (world)
         self.goal_pose_visualizer.visualize(self.pose_command_w[:, :3], self.pose_command_w[:, 3:])
-        # -- current body pose
+        # current body pose (world)
         body_pose_w = self.robot.data.body_state_w[:, self.body_idx]
         self.current_pose_visualizer.visualize(body_pose_w[:, :3], body_pose_w[:, 3:7])
 
+
 @configclass
 class HemispherePoseCommandCfg(CommandTermCfg):
-        """Configuration for the end-effector trajectory command generator."""
+    """Configuration for the end-effector trajectory command generator."""
 
-        class_type: type = HemispherePoseCommand
+    class_type: type = HemispherePoseCommand
 
-        asset_name: str = MISSING
-        """Name of the asset in the environment for which the commands are generated."""
+    asset_name: str = MISSING
+    """Name of the asset in the environment for which the commands are generated."""
 
-        body_name: str = MISSING
-        """Name of the end-effector body in the asset for which the commands are generated."""
+    body_name: str = MISSING
+    """Name of the end-effector body in the asset for which the commands are generated."""
 
-        @configclass
-        class Ranges:
-            """Uniform distribution ranges for the trajectory commands."""
+    @configclass
+    class Ranges:
+        """Uniform distribution ranges for the trajectory commands."""
+        # Spherical coordinate ranges
+        pos_l: tuple[float, float] = MISSING
+        """Range for the spherical radial coordinate (in m)."""
 
-            # Spherical coordinate ranges
-            pos_l: tuple[float, float] = MISSING
-            """Range for the spherical radial coordinate (in m)."""
+        pos_p: tuple[float, float] = MISSING
+        """Range for the spherical polar angle (in rad)."""
 
-            pos_p: tuple[float, float] = MISSING
-            """Range for the spherical polar angle (in rad)."""
+        pos_y: tuple[float, float] = MISSING
+        """Range for the spherical azimuthal angle (in rad)."""
 
-            pos_y: tuple[float, float] = MISSING
-            """Range for the spherical azimuthal angle (in rad)."""
+        # Orientation ranges
+        orn_alpha: tuple[float, float] = MISSING
+        """Range for the roll orientation (in rad)."""
 
-            # Orientation ranges
-            orn_alpha: tuple[float, float] = MISSING
-            """Range for the roll orientation (in rad)."""
+        orn_beta: tuple[float, float] = MISSING
+        """Range for the pitch orientation (in rad)."""
 
-            orn_beta: tuple[float, float] = MISSING
-            """Range for the pitch orientation (in rad)."""
+        orn_gamma: tuple[float, float] = MISSING
+        """Range for the yaw orientation (in rad)."""
 
-            orn_gamma: tuple[float, float] = MISSING
-            """Range for the yaw orientation (in rad)."""
+    # main (default) ranges (required)
+    ranges: Ranges = MISSING
+    """Distribution ranges for the trajectory commands."""
 
-        ranges: Ranges = MISSING
-        """Distribution ranges for the trajectory commands."""
+    # Optional initial/final ranges for curriculum (non-invasive if unset)
+    ranges_init: "HemispherePoseCommandCfg.Ranges | None" = None
+    ranges_final: "HemispherePoseCommandCfg.Ranges | None" = None
 
-        @configclass
-        class SphereCenter:
-            """Configuration for the spherical coordinate system center."""
+    # Simple curriculum control:
+    #   - curriculum_coeff <= 0.0  → disabled (use `ranges` only)
+    #   - > 0.0 → blend init→final using env.common_step_counter and num_steps_per_env
+    curriculum_coeff: float = 0.0
+    num_steps_per_env: int = 24
 
-            x_offset: float = 0.0
-            """X offset from robot base to sphere center (in m)."""
-
-            y_offset: float = 0.0
-            """Y offset from robot base to sphere center (in m)."""
-
-            z_invariant_offset: float = 0.37
-            """Absolute Z coordinate of the sphere center in world frame (in m)."""
-
-        sphere_center: SphereCenter = SphereCenter()
+    @configclass
+    class SphereCenter:
         """Configuration for the spherical coordinate system center."""
+        x_offset: float = 0.0
+        """X offset from robot base to sphere center (in m)."""
+        y_offset: float = 0.0
+        """Y offset from robot base to sphere center (in m)."""
+        z_invariant_offset: float = 0.37
+        """Absolute Z coordinate of the sphere center in world frame (in m)."""
 
-        arm_induced_pitch: float = 0.0
-        """Additional pitch angle induced by arm configuration (in rad)."""
-        
-        make_quat_unique: bool = True
-        """Whether to make the quaternion unique by ensuring positive real part."""
+    sphere_center: SphereCenter = SphereCenter()
+    """Configuration for the spherical coordinate system center."""
 
-        goal_pose_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(
-            prim_path="/Visuals/Command/ee_goal_pose"
-        )
-        """The configuration for the goal pose visualization marker."""
+    arm_induced_pitch: float = 0.0
+    """Additional pitch angle induced by arm configuration (in rad)."""
 
-        current_pose_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(
-            prim_path="/Visuals/Command/ee_current_pose"
-        )
-        """The configuration for the current pose visualization marker."""
+    make_quat_unique: bool = True
+    """Whether to make the quaternion unique by ensuring positive real part."""
 
-        # Set the scale of the visualization markers
-        goal_pose_visualizer_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
-        current_pose_visualizer_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
+    goal_pose_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(
+        prim_path="/Visuals/Command/ee_goal_pose"
+    )
+    """The configuration for the goal pose visualization marker."""
+
+    current_pose_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(
+        prim_path="/Visuals/Command/ee_current_pose"
+    )
+    """The configuration for the current pose visualization marker."""
+
+    # Set the scale of the visualization markers
+    goal_pose_visualizer_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
+    current_pose_visualizer_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
         
 class EndEffectorTrajectoryCommand(CommandTerm):
     """Command generator for generating end-effector trajectory commands.

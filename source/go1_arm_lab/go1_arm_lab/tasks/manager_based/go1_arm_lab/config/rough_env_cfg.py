@@ -114,7 +114,7 @@ class Go1ArmRoughEnvCfg_PLAY(Go1ArmRoughEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
        
-        self.commands.ee_pose.resampling_time_range = (4.0,4.0)
+        self.commands.ee_pose.resampling_time_range = (2.0,2.0)
         self.commands.ee_pose.ranges.pos_x = (0.45, 0.6)
         self.commands.ee_pose.ranges.pos_y = (-0.25, 0.25)
         self.commands.ee_pose.ranges.pos_z = (0.2, 0.5)

@@ -50,10 +50,10 @@ class Go1ArmFlatEnvCfg(LocomotionVelocityEnvCfg):
 
         # reward weight
         # arm
-        self.rewards.end_effector_position_tracking.weight = 3.0
+        self.rewards.end_effector_position_tracking.weight = 5.0 #3
         self.rewards.end_effector_orientation_tracking.weight = -2.0
-        self.rewards.end_effector_action_rate.weight = -0.01 #-0.005 
-        self.rewards.end_effector_action_smoothness.weight = -0.1 #-0.02
+        self.rewards.end_effector_action_rate.weight = -0.05 #-0.005 
+        self.rewards.end_effector_action_smoothness.weight = -1.5 #-0.1
         
         # leg
         self.rewards.tracking_lin_vel_x_l1.weight = 3.5
@@ -65,22 +65,22 @@ class Go1ArmFlatEnvCfg(LocomotionVelocityEnvCfg):
         self.rewards.action_rate_l2.weight = -0.01
         
         self.rewards.feet_air_time.weight = 0.0 #0.5
-        self.rewards.F_feet_air_time.weight = 0.5 #1.0
-        self.rewards.R_feet_air_time.weight = 0.5 #1.0
+        self.rewards.F_feet_air_time.weight = 1.0 #1.0
+        self.rewards.R_feet_air_time.weight = 1.0 #1.0
 
         self.rewards.feet_height.weight = -0.0 #TODO
         self.rewards.feet_height_body.weight = -3.0 #TODO
-        self.rewards.foot_contact.weight = 0.003 #0.003
+        self.rewards.foot_contact.weight = 0.005 #0.003
         self.rewards.hip_deviation.weight = -0.2
         self.rewards.joint_deviation.weight = -0.01
         self.rewards.action_smoothness.weight = -0.02
         self.rewards.height_reward.weight = -2.0
-        self.rewards.flat_orientation_l2.weight = -1.0
+        self.rewards.flat_orientation_l2.weight = -1.5 #-1.0
 
         # new rewards added: 
-        self.rewards.feet_air_time_variance.weight = -2.0 #-1.0
+        self.rewards.feet_air_time_variance.weight = -2.5 #-2.0
         self.rewards.feet_air_time_variance.params["sensor_cfg"].body_names = [self.foot_link_name]
-        self.rewards.feet_gait.weight = 1.0 #0.5
+        self.rewards.feet_gait.weight = 4.0 #0.5
         self.rewards.feet_gait.params["synced_feet_pair_names"] = (("FL_foot", "RR_foot"), ("FR_foot", "RL_foot"))
 
 
@@ -104,14 +104,14 @@ class Go1ArmFlatEnvCfg_PLAY(Go1ArmFlatEnvCfg):
         
         self.commands.ee_pose.is_Go1Arm_Play = True
         
-        self.commands.base_velocity.resampling_time_range = (5.0,5.0)
+        self.commands.base_velocity.resampling_time_range = (2.0,2.0)
         self.commands.base_velocity.rel_standing_envs = 0.1
         
         self.commands.base_velocity.ranges.lin_vel_x = (0.0, 1.0)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
        
-        self.commands.ee_pose.resampling_time_range = (4.0,4.0)
+        self.commands.ee_pose.resampling_time_range = (2.0,2.0)
         self.commands.ee_pose.ranges.pos_x = (0.45, 0.6)
         self.commands.ee_pose.ranges.pos_y = (-0.25, 0.25)
         self.commands.ee_pose.ranges.pos_z = (0.2, 0.5)
