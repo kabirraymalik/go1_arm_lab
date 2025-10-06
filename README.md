@@ -50,6 +50,10 @@ python scripts/rsl_rl/play.py --task Isaac-widowgo1-flat-play --num_envs 1
 python scripts/rsl_rl/play.py --task Isaac-widowgo1-rough-play --num_envs 1
 ```
 
+#### Sim2Sim
+
+For details on sim2sim with this robot, plase see [widowgo1_sim2sim](https://github.com/kabirraymalik/widowgo1_sim2sim)
+
 ## Acknowledgments
 This project was heavily structured and based off of [Go2Arm_Lab](https://github.com/zzzJie-Robot/Go2Arm_Lab)
 

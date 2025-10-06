@@ -48,6 +48,28 @@ class Go1ArmFlatEnvCfg(LocomotionVelocityEnvCfg):
         #self.commands.ee_pose.ranges_final.pos_y = (-0.35, 0.35)
         #self.commands.ee_pose.ranges_final.pos_z = (0.15, 0.6)
 
+        self.commands.ee_pose.ranges_init.pos_l = (0.57, 0.65)
+        self.commands.ee_pose.ranges_init.pos_p = (0.61, 0.72)
+        self.commands.ee_pose.ranges_init.pos_y = (-0.11, 0.11)
+        self.commands.ee_pose.ranges_init.orn_alpha = (0.0, 0.0)
+        self.commands.ee_pose.ranges_init.orn_beta = (0.0, 0.0)
+        self.commands.ee_pose.ranges_init.orn_gamma = (0.0, 0.0)
+
+        self.commands.ee_pose.ranges.pos_l = (0.46, 0.70)
+        self.commands.ee_pose.ranges.pos_p = (0.35, 0.90)
+        self.commands.ee_pose.ranges.pos_y = (-0.52, 0.52)
+        self.commands.ee_pose.ranges.orn_alpha = (0.0, 0.0)
+        self.commands.ee_pose.ranges.orn_beta = (-0.349066, 0.349066) # ≈ ±π/9
+        self.commands.ee_pose.ranges.orn_gamma = (-0.349066, 0.349066) # ≈ ±π/9
+
+        self.commands.ee_pose.ranges_final.pos_l = (0.46, 0.70)
+        self.commands.ee_pose.ranges_final.pos_p = (0.35, 0.90)
+        self.commands.ee_pose.ranges_final.pos_y = (-0.52, 0.52)
+        self.commands.ee_pose.ranges_final.orn_alpha = (0.0, 0.0)
+        self.commands.ee_pose.ranges_final.orn_beta = (-0.349066, 0.349066)
+        self.commands.ee_pose.ranges_final.orn_gamma = (-0.349066, 0.349066)
+
+
         # reward weight
         # arm
         self.rewards.end_effector_position_tracking.weight = 3.0
@@ -111,7 +133,11 @@ class Go1ArmFlatEnvCfg_PLAY(Go1ArmFlatEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
        
-        self.commands.ee_pose.resampling_time_range = (4.0,4.0)
-        self.commands.ee_pose.ranges.pos_x = (0.45, 0.6)
-        self.commands.ee_pose.ranges.pos_y = (-0.25, 0.25)
-        self.commands.ee_pose.ranges.pos_z = (0.2, 0.5)
+        self.commands.ee_pose.resampling_time_range = (2.0,2.0)
+        self.commands.ee_pose.ranges.pos_l = (0.46, 0.70)
+        self.commands.ee_pose.ranges.pos_p = (0.35, 0.90)
+        self.commands.ee_pose.ranges.pos_y = (-0.52, 0.52)
+        self.commands.ee_pose.ranges.orn_alpha = (0.0, 0.0)
+        self.commands.ee_pose.ranges.orn_beta = (-0.349066, 0.349066) # ≈ ±π/9
+        self.commands.ee_pose.ranges.orn_gamma = (-0.349066, 0.349066) # ≈ ±π/9
+        self.commands.ee_pose.debug_vis = True

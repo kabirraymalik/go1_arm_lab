@@ -223,20 +223,54 @@ class CommandsCfg:
     #         orn_gamma=(-0.42 * np.pi, 0.42 * np.pi),
     #     ),
     # )
-    ee_pose = mdp.HemispherePoseCommandCfg(
+    ee_pose = mdp.command_cfg.HemispherePoseCommandCfg(
         asset_name="robot",
         body_name="wx250s_gripper_link",
         resampling_time_range=(6.0, 8.0),  # tune as needed
         debug_vis=True,
         
-    #    ranges_init=mdp.HemispherePoseCommandCfg.Ranges(
-    #        pos_l=(0.45, 0.50),
-    #        pos_p=(-0.05 * np.pi, 0.05 * np.pi),
-    #        pos_y=(-0.05 * np.pi, 0.05 * np.pi),
-    #        orn_alpha=(-0.05 * np.pi, 0.05 * np.pi),
-    #        orn_beta=(-0.05 * np.pi, 0.05 * np.pi),
-    #        orn_gamma=(-0.05 * np.pi, 0.05 * np.pi),
-    #    ),
+        # keep sphere center aligned with robot base yaw
+        sphere_center=mdp.command_cfg.HemispherePoseCommandCfg.SphereCenter(
+            x_offset=0.0,
+            y_offset=0.0,
+            z_invariant_offset=0.37,
+        ),
+
+        # placeholders — will be set explicitly in flat_env_cfg.py
+        ranges=mdp.command_cfg.HemispherePoseCommandCfg.Ranges(
+            pos_l=(0.0, 0.0),
+            pos_p=(0.0, 0.0),
+            pos_y=(0.0, 0.0),
+            orn_alpha=(0.0, 0.0),
+            orn_beta=(0.0, 0.0),
+            orn_gamma=(0.0, 0.0),
+        ),
+        ranges_init=mdp.command_cfg.HemispherePoseCommandCfg.Ranges(
+            pos_l=(0.0, 0.0),
+            pos_p=(0.0, 0.0),
+            pos_y=(0.0, 0.0),
+            orn_alpha=(0.0, 0.0),
+            orn_beta=(0.0, 0.0),
+            orn_gamma=(0.0, 0.0),
+        ),
+        ranges_final=mdp.command_cfg.HemispherePoseCommandCfg.Ranges(
+            pos_l=(0.0, 0.0),
+            pos_p=(0.0, 0.0),
+            pos_y=(0.0, 0.0),
+            orn_alpha=(0.0, 0.0),
+            orn_beta=(0.0, 0.0),
+            orn_gamma=(0.0, 0.0),
+        )
+    )
+    """
+       ranges_init=mdp.HemispherePoseCommandCfg.Ranges(
+           pos_l=(0.45, 0.50),
+           pos_p=(-0.05 * np.pi, 0.05 * np.pi),
+           pos_y=(-0.05 * np.pi, 0.05 * np.pi),
+           orn_alpha=(-0.05 * np.pi, 0.05 * np.pi),
+           orn_beta=(-0.05 * np.pi, 0.05 * np.pi),
+           orn_gamma=(-0.05 * np.pi, 0.05 * np.pi),
+       ),
         
         ranges=mdp.HemispherePoseCommandCfg.Ranges(
             pos_l=(0.20, 0.70),
@@ -247,15 +281,15 @@ class CommandsCfg:
             orn_gamma=(-0.42 * np.pi, 0.42 * np.pi),
         ),
     
-    #    ranges_final=mdp.HemispherePoseCommandCfg.Ranges(
-    #        pos_l=(0.35, 0.55),
-    #        pos_p=(-0.20 * np.pi, 0.20 * np.pi),
-    #        pos_y=(-0.25 * np.pi, 0.25 * np.pi),
-    #        orn_alpha=(-0.20 * np.pi, 0.20 * np.pi),
-    #        orn_beta=(-0.15 * np.pi, 0.15 * np.pi),
-    #        orn_gamma=(-0.20 * np.pi, 0.20 * np.pi),
-    #    ),    
-    )
+       ranges_final=mdp.HemispherePoseCommandCfg.Ranges(
+           pos_l=(0.35, 0.55),
+           pos_p=(-0.20 * np.pi, 0.20 * np.pi),
+           pos_y=(-0.25 * np.pi, 0.25 * np.pi),
+           orn_alpha=(-0.20 * np.pi, 0.20 * np.pi),
+           orn_beta=(-0.15 * np.pi, 0.15 * np.pi),
+           orn_gamma=(-0.20 * np.pi, 0.20 * np.pi),
+       ),    
+    """
     """
     ee_pose = mdp.command_cfg.UniformPoseCommandCfg(
         asset_name="robot",
