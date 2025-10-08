@@ -311,7 +311,7 @@ class HemispherePoseCommand(CommandTerm):
         """
         return self.pose_command_b
 
-    # ----- curriculum helpers (optional) -----
+    # optional curriculum helpers
     def _progress_scalar(self) -> torch.Tensor:
         coeff = float(getattr(self.cfg, "curriculum_coeff", 0.0) or 0.0)
         if coeff <= 0.0:
@@ -339,25 +339,7 @@ class HemispherePoseCommand(CommandTerm):
         v_final = _u(rfi)
         return (1.0 - s) * v_init + s * v_final
 
-    # ----- required virtuals -----
-    """
-    def _update_metrics(self):
-        # Transform command from spherical frame (centered at ground-fixed Z) to world
-        self.pose_command_w[:,:3], self.pose_command_w[:,3:] = combine_frame_transforms(
-            self.robot.data.root_pos_w, 
-            self.robot.data.root_quat_w,
-            self.pose_command_b[:,:3], 
-            self.pose_command_b[:,3:]
-        )
-        pos_error, rot_error = compute_pose_error(
-            self.pose_command_w[:, :3],
-            self.pose_command_w[:, 3:],
-            self.robot.data.body_state_w[:, self.body_idx, :3],
-            self.robot.data.body_state_w[:, self.body_idx, 3:7],
-        )
-        self.metrics["position_error"] = torch.norm(pos_error, dim=-1)
-        self.metrics["orientation_error"] = torch.norm(rot_error, dim=-1)
-    """
+    # core helpers
     def _update_metrics(self):
         # transform command from base frame to simulation world frame (root pose)
         self.pose_command_w[:, :3], self.pose_command_w[:, 3:] = combine_frame_transforms(
@@ -401,7 +383,10 @@ class HemispherePoseCommand(CommandTerm):
         robot_base_pos_w = self.robot.data.root_pos_w[env_ids]
         robot_base_quat_w = self.robot.data.root_quat_w[env_ids]
         self.pose_command_b[env_ids, :3], _ = subtract_frame_transforms(
-            robot_base_pos_w, robot_base_quat_w, cart_coords_world, torch.zeros(len(env_ids), 4, device=self.device)
+            robot_base_pos_w, 
+            robot_base_quat_w, 
+            cart_coords_world, 
+            torch.zeros(len(env_ids), 4, device=self.device)
         )
 
         # spherical orientation (alpha, beta, gamma) with optional curriculum
@@ -413,7 +398,7 @@ class HemispherePoseCommand(CommandTerm):
         quat_sphere = quat_from_euler_xyz(euler_sphere[:, 0], euler_sphere[:, 1], euler_sphere[:, 2])
         quat_world = quat_mul_wxyz(base_yaw_quat, quat_sphere)
 
-        # world → base (orientation)
+        # world -> base (orientation)
         _, self.pose_command_b[env_ids, 3:] = subtract_frame_transforms(
             robot_base_pos_w, robot_base_quat_w, torch.zeros_like(robot_base_pos_w), quat_world
         )
@@ -425,9 +410,9 @@ class HemispherePoseCommand(CommandTerm):
         # create markers if necessary for the first time
         if debug_vis:
             if not hasattr(self, "goal_pose_visualizer"):
-                # -- goal pose
+                # goal pose
                 self.goal_pose_visualizer = VisualizationMarkers(self.cfg.goal_pose_visualizer_cfg)
-                # -- current body pose
+                # current body pose
                 self.current_pose_visualizer = VisualizationMarkers(self.cfg.current_pose_visualizer_cfg)
             # set their visibility to true
             self.goal_pose_visualizer.set_visibility(True)
@@ -436,19 +421,8 @@ class HemispherePoseCommand(CommandTerm):
             if hasattr(self, "goal_pose_visualizer"):
                 self.goal_pose_visualizer.set_visibility(False)
                 self.current_pose_visualizer.set_visibility(False)
-    
-    """
-    def _debug_vis_callback(self, event):
-        # check if robot is initialized
-        if not self.robot.is_initialized:
-            return
-        # -- goal pose (world)
-        self.goal_pose_visualizer.visualize(self.pose_command_w[:, :3], self.pose_command_w[:, 3:])
-        # -- current body pose (world)
-        body_pose_w = self.robot.data.body_state_w[:, self.body_idx]
-        self.current_pose_visualizer.visualize(body_pose_w[:, :3], body_pose_w[:, 3:7])
-    """
-    def _debug_vis_callback(self, event):
+
+    def _debug_vis_callback(self):
         # check if robot is initialized
         if not self.robot.is_initialized:
             return
@@ -458,11 +432,9 @@ class HemispherePoseCommand(CommandTerm):
         body_pose_w = self.robot.data.body_state_w[:, self.body_idx]
         self.current_pose_visualizer.visualize(body_pose_w[:, :3], body_pose_w[:, 3:7])
 
-
     def _update_command(self):
         pass
 
-    # helpers
     def _get_ee_goal_spherical_center(self):
         center = torch.cat(
             [self.robot.data.root_pos_w[:, :2], torch.full((self.num_envs, 1), self.arm_base_offset[0, 2], device=self.device)],
