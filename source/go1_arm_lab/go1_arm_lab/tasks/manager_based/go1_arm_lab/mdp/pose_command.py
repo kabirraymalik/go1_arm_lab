@@ -123,8 +123,8 @@ class UniformPoseCommand(CommandTerm):
         pos_error, rot_error = compute_pose_error(
             self.pose_command_w[:, :3],
             self.pose_command_w[:, 3:],
-            self.robot.data.body_state_w[:, self.body_idx, :3],
-            self.robot.data.body_state_w[:, self.body_idx, 3:7],
+            self.robot.data.body_pos_w[:, self.body_idx],
+            self.robot.data.body_quat_w[:, self.body_idx],
         )
         # print("_update_metrics")
         # print("pose_command",self.pose_command_w)
@@ -258,29 +258,43 @@ class HemispherePoseCommand(CommandTerm):
     """Configuration of the Command Generator"""
 
     def __init__(self, cfg: "HemispherePoseCommandCfg", env: "ManagerBasedRLEnv"):
+        """Initialize the command generator class.
+
+        Args:
+            cfg: The configuration parameters for the command generator.
+            env: The environment object.
+        """
+
+        # initialize the base class
         super().__init__(cfg, env)
         
+        # store env as local var
         self.env = env
+
+        # extract the robot and body index for which the command is generated
         self.robot: Articulation = env.scene[cfg.asset_name]
         self.body_idx = self.robot.find_bodies(cfg.body_name)[0][0]
 
-        # command buffers: (x, y, z, qw, qx, qy, qz) in base frame
+        # create command buffers: (x, y, z, qw, qx, qy, qz) in base frame
         self.pose_command_b = torch.zeros(self.num_envs, 7, device=self.device)
         self.pose_command_b[:, 3] = 1.0
         self.pose_command_w = torch.zeros_like(self.pose_command_b)
 
         # spherical center offsets (per env)
-        self.arm_base_offset = torch.tensor(
-            [cfg.sphere_center.x_offset, cfg.sphere_center.y_offset, cfg.sphere_center.z_invariant_offset],
-            device=self.device, dtype=torch.float
+        self.arm_base_offset = torch.tensor([
+            cfg.sphere_center.x_offset, 
+            cfg.sphere_center.y_offset, 
+            cfg.sphere_center.z_invariant_offset
+            ], device=self.device, dtype=torch.float
         ).repeat(self.num_envs, 1)
 
         # metrics
         self.metrics["position_error"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["orientation_error"] = torch.zeros(self.num_envs, device=self.device)
+        # for z invariance wrt body link height
+        self._goal_world_z = self._goal_world_z = torch.zeros(self.num_envs, device=self.device)
 
-        # cache yaw-only quaternion helper
-        # no-op fields when curriculum disabled
+        # get curriculum cfg information
         self._num_steps_default = int(getattr(self.cfg, "num_steps_per_env", 24))
 
     def __str__(self) -> str:
@@ -291,6 +305,10 @@ class HemispherePoseCommand(CommandTerm):
 
     @property
     def command(self) -> torch.Tensor:
+        """The desired pose command. Shape is (num_envs, 7).
+
+        The first three elements correspond to the position, followed by the quaternion orientation in (w, x, y, z).
+        """
         return self.pose_command_b
 
     # ----- curriculum helpers (optional) -----
@@ -322,18 +340,40 @@ class HemispherePoseCommand(CommandTerm):
         return (1.0 - s) * v_init + s * v_final
 
     # ----- required virtuals -----
+    """
     def _update_metrics(self):
-        self.pose_command_w[:, :3], self.pose_command_w[:, 3:] = combine_frame_transforms(
-            self.robot.data.root_pos_w,
+        # Transform command from spherical frame (centered at ground-fixed Z) to world
+        self.pose_command_w[:,:3], self.pose_command_w[:,3:] = combine_frame_transforms(
+            self.robot.data.root_pos_w, 
             self.robot.data.root_quat_w,
-            self.pose_command_b[:, :3],
-            self.pose_command_b[:, 3:],
+            self.pose_command_b[:,:3], 
+            self.pose_command_b[:,3:]
         )
         pos_error, rot_error = compute_pose_error(
             self.pose_command_w[:, :3],
             self.pose_command_w[:, 3:],
             self.robot.data.body_state_w[:, self.body_idx, :3],
             self.robot.data.body_state_w[:, self.body_idx, 3:7],
+        )
+        self.metrics["position_error"] = torch.norm(pos_error, dim=-1)
+        self.metrics["orientation_error"] = torch.norm(rot_error, dim=-1)
+    """
+    def _update_metrics(self):
+        # transform command from base frame to simulation world frame (root pose)
+        self.pose_command_w[:, :3], self.pose_command_w[:, 3:] = combine_frame_transforms(
+            self.robot.data.root_pos_w,
+            self.robot.data.root_quat_w,
+            self.pose_command_b[:, :3],
+            self.pose_command_b[:, 3:],
+        )
+        # set z at constant env height, invariant to base link z motion
+        self.pose_command_w[:, 2] = self._goal_world_z
+        # compute the error using body_pos_w/body_quat_w (matches reference)
+        pos_error, rot_error = compute_pose_error(
+            self.pose_command_w[:, :3],
+            self.pose_command_w[:, 3:],
+            self.robot.data.body_pos_w[:, self.body_idx],
+            self.robot.data.body_quat_w[:, self.body_idx],
         )
         self.metrics["position_error"] = torch.norm(pos_error, dim=-1)
         self.metrics["orientation_error"] = torch.norm(rot_error, dim=-1)
@@ -353,6 +393,9 @@ class HemispherePoseCommand(CommandTerm):
         sphere_center_world = self._get_ee_goal_spherical_center()[env_ids]
         cart_coords_world_rotated = quat_apply_wxyz(base_yaw_quat, cart_coords)
         cart_coords_world = sphere_center_world + cart_coords_world_rotated
+        
+        # set env z to be invariant to current body link z
+        self._goal_world_z[env_ids] = cart_coords_world[:, 2]
 
         # world -> base (position)
         robot_base_pos_w = self.robot.data.root_pos_w[env_ids]
@@ -393,23 +436,28 @@ class HemispherePoseCommand(CommandTerm):
             if hasattr(self, "goal_pose_visualizer"):
                 self.goal_pose_visualizer.set_visibility(False)
                 self.current_pose_visualizer.set_visibility(False)
-
+    
+    """
     def _debug_vis_callback(self, event):
         # check if robot is initialized
         if not self.robot.is_initialized:
             return
-        # ensure world-space command is up to date
-        self.pose_command_w[:, :3], self.pose_command_w[:, 3:] = combine_frame_transforms(
-            self.robot.data.root_pos_w,
-            self.robot.data.root_quat_w,
-            self.pose_command_b[:, :3],
-            self.pose_command_b[:, 3:],
-        )
         # -- goal pose (world)
         self.goal_pose_visualizer.visualize(self.pose_command_w[:, :3], self.pose_command_w[:, 3:])
         # -- current body pose (world)
         body_pose_w = self.robot.data.body_state_w[:, self.body_idx]
         self.current_pose_visualizer.visualize(body_pose_w[:, :3], body_pose_w[:, 3:7])
+    """
+    def _debug_vis_callback(self, event):
+        # check if robot is initialized
+        if not self.robot.is_initialized:
+            return
+        # goal pose (world): use already-updated pose_command_w for consistency with metrics
+        self.goal_pose_visualizer.visualize(self.pose_command_w[:, :3], self.pose_command_w[:, 3:])
+        # current body pose (world)
+        body_pose_w = self.robot.data.body_state_w[:, self.body_idx]
+        self.current_pose_visualizer.visualize(body_pose_w[:, :3], body_pose_w[:, 3:7])
+
 
     def _update_command(self):
         pass
