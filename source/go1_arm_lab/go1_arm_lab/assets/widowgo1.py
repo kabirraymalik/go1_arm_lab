@@ -105,11 +105,11 @@ WIDOW_GO1_CFG = ArticulationCfg(
         # ),
         "arm": DCMotorCfg(
             joint_names_expr=["widow_.*"],
-            velocity_limit=30.0,
-            effort_limit=40.5,
-            saturation_effort=23.5,
-            stiffness=80,
-            damping=4,
+            velocity_limit=3.14, # 2.0 @ 30.0
+            effort_limit=10.0, # 5.0 # 40.5
+            saturation_effort=10.0,
+            stiffness=10, # 100 or None # 80
+            damping=0.5, # 10 or None # 4
             friction=0.0,
             armature=0.01,
         ),

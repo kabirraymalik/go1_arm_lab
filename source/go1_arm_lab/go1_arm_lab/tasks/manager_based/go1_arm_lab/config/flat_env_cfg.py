@@ -97,7 +97,7 @@ class Go1ArmFlatEnvCfg(LocomotionVelocityEnvCfg):
         self.rewards.joint_deviation.weight = -0.01
         self.rewards.action_smoothness.weight = -0.02
         self.rewards.height_reward.weight = -2.0
-        self.rewards.flat_orientation_l2.weight = -2.0 # CHANGED 10/7: -1.0
+        self.rewards.flat_orientation_l2.weight = -1.0 
 
         # new rewards added: 
         self.rewards.feet_air_time_variance.weight = -2.0 #-1.0

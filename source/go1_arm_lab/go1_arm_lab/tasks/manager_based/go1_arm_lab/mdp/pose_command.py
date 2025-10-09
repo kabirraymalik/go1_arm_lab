@@ -422,7 +422,7 @@ class HemispherePoseCommand(CommandTerm):
                 self.goal_pose_visualizer.set_visibility(False)
                 self.current_pose_visualizer.set_visibility(False)
 
-    def _debug_vis_callback(self):
+    def _debug_vis_callback(self, event):
         # check if robot is initialized
         if not self.robot.is_initialized:
             return
