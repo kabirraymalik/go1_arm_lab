@@ -1,5 +1,14 @@
 # go1_arm_lab
 
+## Run the Code in Isaac Lab v2.2.1 (Oct, 2025)
+Train
+```
+python scripts/local_rsl/train.py --task=Isaac-Flat-widowgo1 --headless --logger=wandb
+```
+Play
+```
+python scripts/local_rsl/train.py --task=Isaac-Flat-widowgo1-Play
+```
 ## 📦 Installation
 
 1. Follow the [official guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html) to install IsaacLab v2.2.1.  
