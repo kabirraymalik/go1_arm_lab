@@ -28,7 +28,7 @@ class RewardManager(RewardManagerBase):
             value = term_cfg.func(self._env, **term_cfg.params) * term_cfg.weight * dt
 
             # check if the term is a special term for arm
-            if name.startswith("end_effector"):  ## TODO: 
+            if name.startswith("end_effector"):
                 self._arm_reward_buf += value
             else:
                 self._reward_buf += value

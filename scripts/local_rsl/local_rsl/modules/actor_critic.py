@@ -1,39 +1,7 @@
-# SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: BSD-3-Clause
-# 
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# 1. Redistributions of source code must retain the above copyright notice, this
-# list of conditions and the following disclaimer.
-#
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-# this list of conditions and the following disclaimer in the documentation
-# and/or other materials provided with the distribution.
-#
-# 3. Neither the name of the copyright holder nor the names of its
-# contributors may be used to endorse or promote products derived from
-# this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# Copyright (c) 2021 ETH Zurich, Nikita Rudin
-
 import numpy as np
-
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
-from torch.nn.modules import rnn
 
 # History Encoder
 class StateHistoryEncoder(nn.Module):
@@ -76,7 +44,7 @@ class StateHistoryEncoder(nn.Module):
         # nd * T * n_proprio
         nd = obs.shape[0]
         T = self.tsteps
-        projection = self.encoder(obs.reshape([nd * T, -1])) # do projection for n_proprio -> 32
+        projection = self.encoder(obs.reshape([nd * T, -1]))
         output = self.conv_layers(projection.reshape([nd, T, -1]).permute((0, 2, 1)))
 
         output = self.linear_output(output)
@@ -94,8 +62,6 @@ class ActorCritic(nn.Module):
                         activation_out='tanh',
                         init_std=1.0,
                         **kwargs):
-        # if kwargs:
-        #     print("ActorCritic.__init__ got unexpected arguments, which will be ignored: " + str([key for key in kwargs.keys()]))
         super(ActorCritic, self).__init__()
 
         leg_control_head_hidden_dims = kwargs['leg_control_head_hidden_dims']
@@ -186,7 +152,8 @@ class ActorCritic(nn.Module):
                 self.actor_arm_control_head = nn.Sequential(*actor_arm_layers)
             
             def forward(self, obs, hist_encoding: bool = True):
-                obs_prop = obs[:, :self.num_prop]
+                hist_dim = self.num_hist * self.num_prop
+                obs_prop = obs[:, hist_dim - self.num_prop:hist_dim]
                 if hist_encoding:
                     latent = self.infer_hist_latent(obs)
                 else:

@@ -10,7 +10,7 @@ from ..manager_env_cfg import LocomotionVelocityRoughEnvCfg
 # Pre-defined configs
 ##
 
-from go1_arm_lab.assets.widowgo1 import WIDOW_GO1_CFG
+from lab_play.assets.widowgo1 import WIDOW_GO1_CFG
 
 @configclass
 class widowgo1FlatEnvCfg(LocomotionVelocityRoughEnvCfg):

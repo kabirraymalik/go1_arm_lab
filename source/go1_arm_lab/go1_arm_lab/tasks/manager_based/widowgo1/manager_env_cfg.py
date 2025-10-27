@@ -20,7 +20,6 @@ from isaaclab.terrains import TerrainImporterCfg, TerrainGeneratorCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
-import isaaclab.terrains as terrain_gen
 
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 
@@ -35,24 +34,6 @@ from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG  # isort: skip
 # Scene definition
 ##
 
-Go2_BASE_TERRAINS_CFG = TerrainGeneratorCfg(
-    size=(8.0, 8.0),
-    border_width=20.0,
-    num_rows=10,
-    num_cols=20,
-    horizontal_scale=0.1,
-    vertical_scale=0.005,
-    slope_threshold=0.75,
-    use_cache=False,
-    sub_terrains={
-        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.3),
-        "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
-            proportion=0.7, noise_range=(-0.01, 0.05), noise_step=0.02, border_width=0.25
-        ),
-    },
-)
-
-
 @configclass
 class MySceneCfg(InteractiveSceneCfg):
     """Configuration for the terrain scene with a legged robot."""
@@ -61,7 +42,7 @@ class MySceneCfg(InteractiveSceneCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="generator",
-        terrain_generator=Go2_BASE_TERRAINS_CFG,
+        terrain_generator=ROUGH_TERRAINS_CFG,
         max_init_terrain_level=5,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
@@ -90,12 +71,9 @@ class MySceneCfg(InteractiveSceneCfg):
     )
     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
     # lights
-    sky_light = AssetBaseCfg(
-        prim_path="/World/skyLight",
-        spawn=sim_utils.DomeLightCfg(
-            intensity=750.0,
-            texture_file=f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
-        ),
+    dome_light = AssetBaseCfg(
+        prim_path="/World/DomeLight",
+        spawn=sim_utils.DomeLightCfg(color=(0.9, 0.9, 0.9), intensity=500.0),
     )
 
 
@@ -198,7 +176,6 @@ class EventCfg:
 @configclass
 class CommandsCfg:
     """Command specifications for the MDP."""
-    ## Go2ARM
 
     ee_pose = commands_cfg.UniformPoseCommandCfg(
         asset_name="robot",
@@ -284,7 +261,6 @@ class ActionsCfg:
                                             clip = {".*": (-100.0, 100.0)},
     )
 
-
 @configclass
 class ObservationsCfg:
     """Observation specifications for the MDP."""
@@ -294,8 +270,8 @@ class ObservationsCfg:
         """Observations for policy group."""
         # observation terms (order preserved)
         base_ang_vel = ObsTerm(func=observations.base_ang_vel, history_length=10,noise=Unoise(n_min=-0.1, n_max=0.1))  # dim = 3
-        joint_pos = ObsTerm(func=observations.joint_pos_rel, history_length=10,noise=Unoise(n_min=-0.01, n_max=0.01)) # dim = 20 - 2
-        joint_vel = ObsTerm(func=observations.joint_vel_rel, history_length=10, noise=Unoise(n_min=-0.5, n_max=0.5)) # dim = 20 - 2
+        joint_pos = ObsTerm(func=observations.joint_pos_rel, history_length=10,noise=Unoise(n_min=-0.01, n_max=0.01)) # dim = 18
+        joint_vel = ObsTerm(func=observations.joint_vel_rel, history_length=10, noise=Unoise(n_min=-0.5, n_max=0.5)) # dim = 18
         actions = ObsTerm(func=observations.last_action, history_length=10) # dim = 18
         velocity_commands = ObsTerm(func=observations.generated_commands, history_length=10,
                                     params={"command_name": "base_velocity"}) # dim = 4
@@ -306,88 +282,46 @@ class ObservationsCfg:
             noise=Unoise(n_min=-0.1, n_max=0.1),
             history_length=10
         )        # dim = 3
+
+        def __post_init__(self):
+            self.enable_corruption = True
+            self.concatenate_terms = True
         
-        # priv 
-        # must have a prefix of "priv_". 
-        # priv_base_orientation = ObsTerm(func=observations.root_yaw_angle_w) # dim = 1
+    @configclass
+    class ProprioObsCfg(ObsGroup):
+        # observation terms (order preserved)
+        base_ang_vel = ObsTerm(func=observations.base_ang_vel, noise=Unoise(n_min=-0.1, n_max=0.1))  # dim = 3
+        joint_pos = ObsTerm(func=observations.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01)) # dim = 18
+        joint_vel = ObsTerm(func=observations.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5)) # dim = 18
+        actions = ObsTerm(func=observations.last_action) # dim = 18
+        velocity_commands = ObsTerm(func=observations.generated_commands,
+                                    params={"command_name": "base_velocity"}) # dim = 4
+        ee_pose_command = ObsTerm(func=observations.generated_commands,
+                                   params={"command_name": "ee_pose"}) # dim = 6
+        projected_gravity = ObsTerm(func=observations.projected_gravity)        # dim = 3
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    @configclass
+    class PrivilegedObsCfg(ObsGroup):
+        """Observations for privileged group."""
         priv_mass_base = ObsTerm(func=observations.get_mass_base)# dim = 1
         priv_mass_ee = ObsTerm(func=observations.get_mass_ee) # dim = 1
         priv_joint_torques = ObsTerm(func=observations.get_joints_torques) # dim = 18
         priv_base_lin_vel = ObsTerm(func=observations.base_lin_vel)  # dim = 3
         priv_feet_contact = ObsTerm(func=observations.feet_contact,
                                params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot")}) # dim = 4 bool
-        # more priv_obs:
-        # priv_xxx = xxx
-        
+
         def __post_init__(self):
-            self.enable_corruption = True
+            self.enable_corruption = False
             self.concatenate_terms = True
         
     # observation groups
     policy: PolicyCfg = PolicyCfg()
-
-
-# @configclass
-# class ObservationsCfg:
-#     """Observation specifications for the MDP."""
-
-#     @configclass
-#     class PolicyCfg(ObsGroup):
-#         """Observations for policy group."""
-#         # observation terms (order preserved)
-#         base_ang_vel = ObsTerm(func=observations.base_ang_vel, history_length=10,noise=Unoise(n_min=-0.1, n_max=0.1))  # dim = 3
-#         joint_pos = ObsTerm(func=observations.joint_pos_rel, history_length=10,noise=Unoise(n_min=-0.01, n_max=0.01)) # dim = 20 - 2
-#         joint_vel = ObsTerm(func=observations.joint_vel_rel, history_length=10, noise=Unoise(n_min=-0.5, n_max=0.5)) # dim = 20 - 2
-#         actions = ObsTerm(func=observations.last_action, history_length=10) # dim = 18
-#         velocity_commands = ObsTerm(func=observations.generated_commands, history_length=10,
-#                                     params={"command_name": "base_velocity"}) # dim = 4
-#         ee_pose_command = ObsTerm(func=observations.generated_commands, history_length=10,
-#                                    params={"command_name": "ee_pose"}) # dim = 6
-#         projected_gravity = ObsTerm(
-#             func=observations.projected_gravity,
-#             noise=Unoise(n_min=-0.1, n_max=0.1),
-#             history_length=10
-#         )        # dim = 3
-
-#         def __post_init__(self):
-#             self.enable_corruption = True
-#             self.concatenate_terms = True
-        
-#     @configclass
-#     class ProprioObsCfg(ObsGroup):
-#         # observation terms (order preserved)
-#         base_ang_vel = ObsTerm(func=observations.base_ang_vel, noise=Unoise(n_min=-0.1, n_max=0.1))  # dim = 3
-#         joint_pos = ObsTerm(func=observations.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01)) # dim = 20 - 2
-#         joint_vel = ObsTerm(func=observations.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5)) # dim = 20 - 2
-#         actions = ObsTerm(func=observations.last_action) # dim = 18
-#         velocity_commands = ObsTerm(func=observations.generated_commands,
-#                                     params={"command_name": "base_velocity"}) # dim = 4
-#         ee_pose_command = ObsTerm(func=observations.generated_commands,
-#                                    params={"command_name": "ee_pose"}) # dim = 6
-#         projected_gravity = ObsTerm(func=observations.projected_gravity)        # dim = 3
-
-#         def __post_init__(self):
-#             self.enable_corruption = False
-#             self.concatenate_terms = True
-
-#     @configclass
-#     class PrivilegedObsCfg(ObsGroup):
-#         """Observations for privileged group."""
-#         priv_mass_base = ObsTerm(func=observations.get_mass_base)# dim = 1
-#         priv_mass_ee = ObsTerm(func=observations.get_mass_ee) # dim = 1
-#         priv_joint_torques = ObsTerm(func=observations.get_joints_torques) # dim = 18
-#         priv_base_lin_vel = ObsTerm(func=observations.base_lin_vel)  # dim = 3
-#         priv_feet_contact = ObsTerm(func=observations.feet_contact,
-#                                params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot")}) # dim = 4 bool
-
-#         def __post_init__(self):
-#             self.enable_corruption = False
-#             self.concatenate_terms = True
-        
-#     # observation groups
-#     policy: PolicyCfg = PolicyCfg()
-#     proprio: ProprioObsCfg = ProprioObsCfg()
-#     privileged: PrivilegedObsCfg = PrivilegedObsCfg()
+    proprio: ProprioObsCfg = ProprioObsCfg()
+    privileged: PrivilegedObsCfg = PrivilegedObsCfg()
 
 
 @configclass

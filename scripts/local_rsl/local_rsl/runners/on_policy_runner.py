@@ -44,13 +44,14 @@ import numpy as np
 import rsl_rl
 from rsl_rl.utils import store_code_state
 from rsl_rl.modules import EmpiricalNormalization
+from rsl_rl.env import VecEnv
 # import wandb
 from torchinfo import summary
 
 class OnPolicyRunner:
 
     def __init__(self,
-                 env,
+                 env: VecEnv,
                  train_cfg,
                  log_dir=None,
                  device='cpu'):
@@ -60,13 +61,30 @@ class OnPolicyRunner:
         self.policy_cfg = train_cfg["policy"]
         self.device = device
         self.env = env
-        print(env)
+
+        # Get all dimensions from config (unified approach)
+        num_prop = self.policy_cfg["num_prop"]
+        num_hist = self.policy_cfg["num_hist"]
+        num_priv = self.policy_cfg.get("num_priv", 0)
+        num_actions = self.env.num_actions
+        
+        # Compute derived dimensions
+        policy_obs_dim = num_prop * num_hist  # policy obs
+        proprio_obs_dim = num_prop            # current proprio
+        privileged_obs_dim = num_priv         # privileged obs
+        
+        # For critic normalization, use privileged if available, otherwise policy obs
+        num_critic_obs = privileged_obs_dim if privileged_obs_dim > 0 else (proprio_obs_dim if proprio_obs_dim > 0 else policy_obs_dim)
+        
+        # Initialize actor-critic with dimensions from config
         actor_critic_class = eval(self.policy_cfg.pop("class_name")) # ActorCritic
-        actor_critic: ActorCritic = actor_critic_class( self.policy_cfg["num_prop"],
-                                                        self.policy_cfg["num_prop"],
-                                                        self.env.num_actions,
-                                                        **self.policy_cfg, 
-                                                        ).to(self.device)
+        actor_critic: ActorCritic = actor_critic_class(
+            num_prop,
+            num_prop,
+            num_actions,
+            **self.policy_cfg, 
+        ).to(self.device)
+        
         alg_class = eval(self.alg_cfg.pop("class_name")) # PPO
         self.alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg)
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
@@ -77,15 +95,14 @@ class OnPolicyRunner:
         summary(self.alg.actor_critic)
 
         if self.empirical_normalization:
-            self.obs_normalizer = EmpiricalNormalization(shape=[self.env.num_obs], until=1.0e8).to(self.device)
+            self.obs_normalizer = EmpiricalNormalization(shape=[policy_obs_dim], until=1.0e8).to(self.device)
             self.critic_obs_normalizer = EmpiricalNormalization(shape=[num_critic_obs], until=1.0e8).to(self.device)
         else:
             self.obs_normalizer = torch.nn.Identity().to(self.device)  # no normalization
             self.critic_obs_normalizer = torch.nn.Identity().to(self.device)  # no normalization
 
         # init storage and model
-
-        self.alg.init_storage(self.env.num_envs, self.num_steps_per_env, [self.env.num_obs], [self.env.num_obs], [self.env.num_actions])
+        self.alg.init_storage(self.env.num_envs, self.num_steps_per_env, [policy_obs_dim], [proprio_obs_dim], [privileged_obs_dim], [num_actions])
 
         # Log
         self.log_dir = log_dir
@@ -94,16 +111,9 @@ class OnPolicyRunner:
         self.tot_time = 0
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
-        
-        _, _ = self.env.reset()  
-
-        # prepare obs
-        self.prepare_obs()
-
 
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # init metrics   
-
         mean_value_loss = 0.
         mean_surrogate_loss = 0.
         mean_arm_torques_loss = 0.
@@ -112,39 +122,24 @@ class OnPolicyRunner:
         mean_hist_latent_loss = 0.
         mean_priv_reg_loss = 0. 
         priv_reg_coef = 0.
-        # initialize writer
 
-        if self.log_dir is not None and self.writer is None:
-            # Launch either Tensorboard or Neptune & Tensorboard summary writer(s), default: Tensorboard.
-            self.logger_type = self.cfg.get("logger", "tensorboard")
-            self.logger_type = self.logger_type.lower()
-            if self.logger_type == "neptune":
-                from rsl_rl.utils.neptune_utils import NeptuneSummaryWriter
-                self.writer = NeptuneSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
-                self.writer.log_config(self.env.cfg, self.cfg, self.alg_cfg, self.policy_cfg)
-            
-            elif self.logger_type == "wandb":
-                from rsl_rl.utils.wandb_utils import WandbSummaryWriter
-                self.writer = WandbSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
-                self.writer.log_config(self.env.cfg, self.cfg, self.alg_cfg, self.policy_cfg)
-            
-            elif self.logger_type == "tensorboard":
-                self.writer = TensorboardSummaryWriter(log_dir=self.log_dir, flush_secs=10)
-            
-            else:
-                raise AssertionError("logger type not found")
+        # initialize writer
+        self._prepare_logging_writer()
 
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(
                 self.env.episode_length_buf, high=int(self.env.max_episode_length)
             )
 
-        obs, _ = self.env.get_observations()
-        obs = self.change_obs_order(obs)
-        privileged_obs = None ##### unnecessary
-        critic_obs = privileged_obs if privileged_obs is not None else obs
-        
-        obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
+        # Get grouped observations (returns TensorDict)
+        obs_tensordict = self.env.get_observations()
+        # move observations to device using TensorDict's batch operation
+        obs_tensordict = obs_tensordict.to(self.device)
+        # extract grouped observations from TensorDict
+        policy_obs = obs_tensordict.get("policy", None)
+        proprio_obs = obs_tensordict.get("proprio", None)
+        privileged_obs = obs_tensordict.get("privileged", None)
+            
         self.alg.actor_critic.train() # switch to train mode (for dropout for example)
         
         ep_infos = []
@@ -169,14 +164,28 @@ class OnPolicyRunner:
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
 
-                    actions = self.alg.act(obs, critic_obs, hist_encoding)
-                    obs, rewards, arm_rewards, dones, infos = self.env.step(actions)
+                    actions = self.alg.act(policy_obs, proprio_obs, privileged_obs, hist_encoding)
+                    # step the environment (returns TensorDict for observations)
+                    obs_tensordict, rewards, dones, infos = self.env.step(actions)
+                    # extract arm reward from extras
+                    arm_rewards = infos.get("arm_reward", torch.zeros_like(rewards))
+                    # clamp rewards
                     rewards = torch.clamp(rewards, min=-5.0)
                     arm_rewards = torch.clamp(arm_rewards, min=-5.0)
-                    obs = self.change_obs_order(obs)
-                    critic_obs = obs 
-
-                    obs, critic_obs, rewards, arm_rewards, dones = obs.to(self.device), critic_obs.to(self.device), rewards.to(self.device), arm_rewards.to(self.device), dones.to(self.device)
+                    
+                    # move observations to device using TensorDict's batch operation
+                    obs_tensordict = obs_tensordict.to(self.device)
+                    
+                    # extract grouped observations from TensorDict
+                    policy_obs = obs_tensordict.get("policy", None)
+                    proprio_obs = obs_tensordict.get("proprio", None)
+                    privileged_obs = obs_tensordict.get("privileged", None)
+                    
+                    # move other tensors to device
+                    rewards = rewards.to(self.device)
+                    arm_rewards = arm_rewards.to(self.device)
+                    dones = dones.to(self.device)
+                    
                     self.alg.process_env_step(rewards, arm_rewards, dones, infos)
                     
                     if self.log_dir is not None:
@@ -203,7 +212,7 @@ class OnPolicyRunner:
                 # Learning step
                 start = stop
 
-                self.alg.compute_returns(critic_obs)
+                self.alg.compute_returns(policy_obs, proprio_obs, privileged_obs)
             
             # self.alg.storage.clear()
             
@@ -263,6 +272,7 @@ class OnPolicyRunner:
         fps = int(self.num_steps_per_env * self.env.num_envs / (locs["collection_time"] + locs["learn_time"]))
         self.writer.add_scalar("Loss/value_function", locs["mean_value_loss"], locs["it"])
         self.writer.add_scalar("Loss/surrogate", locs["mean_surrogate_loss"], locs["it"])
+        self.writer.add_scalar("Loss/hist_latent", locs["mean_hist_latent_loss"], locs["it"])
         self.writer.add_scalar("Loss/learning_rate", self.alg.learning_rate, locs["it"])
         self.writer.add_scalar("Policy/mean_noise_std", mean_std.item(), locs["it"])
         self.writer.add_scalar("Perf/total_fps", fps, locs["it"])
@@ -288,6 +298,7 @@ class OnPolicyRunner:
                             'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                 f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                 f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
+                f"""{'Hist latent loss:':>{pad}} {locs['mean_hist_latent_loss']:.4f}\n"""
                 f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
                 f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
                 f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
@@ -302,6 +313,7 @@ class OnPolicyRunner:
                             'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                 f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                 f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
+                f"""{'Hist latent loss:':>{pad}} {locs['mean_hist_latent_loss']:.4f}\n"""
                 f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
             )
             #   f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
@@ -312,9 +324,14 @@ class OnPolicyRunner:
             f"""{'-' * width}\n"""
             f"""{'Total timesteps:':>{pad}} {self.tot_timesteps}\n"""
             f"""{'Iteration time:':>{pad}} {iteration_time:.2f}s\n"""
-            f"""{'Total time:':>{pad}} {self.tot_time:.2f}s\n"""
-            f"""{'ETA:':>{pad}} {self.tot_time / (locs['it'] + 1) * (
-                               locs['num_learning_iterations'] - locs['it']):.1f}s\n"""
+            f"""{'Time elapsed:':>{pad}} {time.strftime("%H:%M:%S", time.gmtime(self.tot_time))}\n"""
+            f"""{'ETA:':>{pad}} {time.strftime(
+                "%H:%M:%S",
+                time.gmtime(
+                    self.tot_time / (locs['it'] - locs['start_iter'] + 1)
+                    * (locs['start_iter'] + locs['num_learning_iterations'] - locs['it'])
+                )
+            )}\n"""
         )
         print(log_string)
         
@@ -358,61 +375,26 @@ class OnPolicyRunner:
             policy = lambda x: self.alg.actor_critic.act_inference(self.obs_normalizer(x))  # noqa: E731
         return policy
 
-    def prepare_obs(self):
-        self.total = np.zeros((self.policy_cfg["num_hist"], self.policy_cfg["num_prop"])) 
-        self.obs_new = torch.zeros(self.env.num_envs, self.policy_cfg["num_prop"] * self.policy_cfg["num_hist"]).to(self.env.device)
+    def _prepare_logging_writer(self):
+        """Prepares the logging writers."""
+        if self.log_dir is not None and self.writer is None:
+            # Launch either Tensorboard or Neptune & Tensorboard summary writer(s), default: Tensorboard.
+            self.logger_type = self.cfg.get("logger", "tensorboard")
+            self.logger_type = self.logger_type.lower()
 
-        lst, length = self.env.get_obs_list_length()
-        lst = [item for item in lst if not item.startswith("policy-priv_")]
-        
-        result_dict = {}
-        for i in range(len(lst)):
-            c = np.array(list(range( sum(length[: i + 1 ]) - int(length[i] / self.policy_cfg["num_hist"]), sum(length[: i + 1]) )))
-            result_dict[lst[i]] = c
+            if self.logger_type == "neptune":
+                from rsl_rl.utils.neptune_utils import NeptuneSummaryWriter
 
-        key_list = list(result_dict.keys())
-        a1_list = []
-        for i in range(self.policy_cfg["num_hist"]):
-            for j in range(len(lst)):
-                a1 = np.concatenate([
-                    result_dict[key_list[j]] - (i) * result_dict[key_list[j]].shape[0]])
-                a1_list.append(a1)
-                if j == len(lst) - 1:
-                    a1_list = np.concatenate(a1_list)
-                    self.total[i, :] = a1_list
-                    a1_list = []
+                self.writer = NeptuneSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
+                self.writer.log_config(self.env.cfg, self.cfg, self.alg_cfg, self.policy_cfg)
+            elif self.logger_type == "wandb":
+                from rsl_rl.utils.wandb_utils import WandbSummaryWriter
 
-    def change_obs_order(self, obs):
-        """
-        Modify the order of observations containing historical information for easier network reading. Try to avoid modifications if possible!
+                self.writer = WandbSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
+                self.writer.log_config(self.env.cfg, self.cfg, self.alg_cfg, self.policy_cfg)
+            elif self.logger_type == "tensorboard":
+                from torch.utils.tensorboard import SummaryWriter
 
-        Args:
-            obs(num_envs, num_prop * num_hist): The input to the actor and critic network
-            obs_new(num_envs, num_prop * num_hist): Modified observation order indices corresponding to the observations
-            total(num_hist, num_prop): Indices of the modified observation order
-
-        Returns:
-            obs(num_envs, num_prop * num_hist): The input to the actor and critic network
-
-        Notes:
-            Try to avoid modifications if possible!
-
-        Example:
-            In env.step, the original observation follows right-to-left order, after modification it becomes left-to-right
-
-            For example, the original observation is:
-                obs = ang_vel(3) * 10(num_hist) + joint_pos(18) * 10(num_hist) + joint_vel(18) * 10(num_hist)
-            After env.step, the observation (obs) becomes structured as follows:
-                obs_old = ang_vel_timestep_10 -> ang_vel_timestep_1, joint_pos_timestep_10 -> joint_pos_timestep_1, joint_vel_timestep_10 -> joint_vel_timestep_1
-            We need to modify the observation order to:
-                obs_new = ang_vel_timestep_1, joint_pos_timestep_1, joint_vel_timestep_1 -> ang_vel_timestep_10, joint_pos_timestep_10, joint_vel_timestep_10
-        """ 
-
-        for i in range(self.policy_cfg["num_hist"]):
-            obs_1 = obs[:, self.total[i, :]]
-            self.obs_new = torch.cat([self.obs_new, obs_1], dim=-1)
-        obs = torch.cat([self.obs_new[:, self.policy_cfg["num_prop"] * self.policy_cfg["num_hist"]:], 
-                            obs[:, self.policy_cfg["num_prop"] * self.policy_cfg["num_hist"]:]], dim=-1)                    
-        obs = self.obs_normalizer(obs)
-        self.obs_new = torch.zeros(self.env.num_envs, self.policy_cfg["num_prop"] * self.policy_cfg["num_hist"]).to(self.env.device)
-        return obs
+                self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
+            else:
+                raise ValueError("Logger type not found. Please choose 'neptune', 'wandb' or 'tensorboard'.")

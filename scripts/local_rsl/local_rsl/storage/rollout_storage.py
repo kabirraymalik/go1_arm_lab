@@ -36,8 +36,9 @@ from ..utils import split_and_pad_trajectories
 class RolloutStorage:
     class Transition:
         def __init__(self):
-            self.observations = None
-            self.critic_observations = None
+            self.policy_observations = None
+            self.proprio_observations = None
+            self.privileged_observations = None
             self.actions = None
             self.rewards = None
             self.dones = None
@@ -53,20 +54,28 @@ class RolloutStorage:
         def clear(self):
             self.__init__()
 
-    def __init__(self, num_envs, num_transitions_per_env, obs_shape, privileged_obs_shape, actions_shape, device='cpu'):
+    def __init__(self, num_envs, num_transitions_per_env, policy_obs_shape, proprio_obs_shape, privileged_obs_shape, actions_shape, device='cpu'):
 
         self.device = device
 
-        self.obs_shape = obs_shape
+        self.policy_obs_shape = policy_obs_shape
+        self.proprio_obs_shape = proprio_obs_shape
         self.privileged_obs_shape = privileged_obs_shape
         self.actions_shape = actions_shape
 
-        # Core
-        self.observations = torch.zeros(num_transitions_per_env, num_envs, *obs_shape, device=self.device)
+        # Core - store observations for each group
+        self.policy_observations = torch.zeros(num_transitions_per_env, num_envs, *policy_obs_shape, device=self.device)
+        
+        if proprio_obs_shape[0] != 0:
+            self.proprio_observations = torch.zeros(num_transitions_per_env, num_envs, *proprio_obs_shape, device=self.device)
+        else:
+            self.proprio_observations = None
+            
         if privileged_obs_shape[0] != 0:
             self.privileged_observations = torch.zeros(num_transitions_per_env, num_envs, *privileged_obs_shape, device=self.device)
         else:
             self.privileged_observations = None
+            
         self.rewards = torch.zeros(num_transitions_per_env, num_envs, 2, device=self.device)
         self.actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
         self.dones = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device).byte()
@@ -95,11 +104,14 @@ class RolloutStorage:
     def add_transitions(self, transition: Transition, torque_supervision):
         if self.step >= self.num_transitions_per_env:
             raise AssertionError("Rollout buffer overflow")
-        # print(self.observations[self.step].shape)
-        # print((transition.observations).shape)
-        # print('-----')
-        self.observations[self.step].copy_(transition.observations)
-        if self.privileged_observations is not None: self.privileged_observations[self.step].copy_(transition.critic_observations)
+        
+        # Store observations for each group
+        self.policy_observations[self.step].copy_(transition.policy_observations)
+        if self.proprio_observations is not None and transition.proprio_observations is not None:
+            self.proprio_observations[self.step].copy_(transition.proprio_observations)
+        if self.privileged_observations is not None and transition.privileged_observations is not None:
+            self.privileged_observations[self.step].copy_(transition.privileged_observations)
+            
         self.actions[self.step].copy_(transition.actions)
         self.rewards[self.step].copy_(transition.rewards)
         self.dones[self.step].copy_(transition.dones.view(-1, 1))
@@ -165,12 +177,10 @@ class RolloutStorage:
         mini_batch_size = batch_size // num_mini_batches
         indices = torch.randperm(num_mini_batches*mini_batch_size, requires_grad=False, device=self.device)
 
-        observations = self.observations.flatten(0, 1)
-
-        if self.privileged_observations is not None:
-            critic_observations = self.privileged_observations.flatten(0, 1)
-        else:
-            critic_observations = observations
+        # Flatten observations for each group
+        policy_observations = self.policy_observations.flatten(0, 1)
+        proprio_observations = self.proprio_observations.flatten(0, 1) if self.proprio_observations is not None else None
+        privileged_observations = self.privileged_observations.flatten(0, 1) if self.privileged_observations is not None else None
 
         actions = self.actions.flatten(0, 1)
         values = self.values.flatten(0, 1)
@@ -185,14 +195,14 @@ class RolloutStorage:
 
         for epoch in range(num_epochs):
             for i in range(num_mini_batches):
-
                 start = i*mini_batch_size
                 end = (i+1)*mini_batch_size
                 batch_idx = indices[start:end]
 
-                obs_batch = observations[batch_idx]
-
-                critic_observations_batch = critic_observations[batch_idx]
+                policy_obs_batch = policy_observations[batch_idx]
+                proprio_obs_batch = proprio_observations[batch_idx] if proprio_observations is not None else None
+                privileged_obs_batch = privileged_observations[batch_idx] if privileged_observations is not None else None
+                
                 actions_batch = actions[batch_idx]
                 target_values_batch = values[batch_idx]
                 returns_batch = returns[batch_idx]
@@ -205,18 +215,24 @@ class RolloutStorage:
                 current_arm_dof_pos_batch = current_arm_dof_pos[batch_idx]
                 current_arm_dof_vel_batch = current_arm_dof_vel[batch_idx]
 
-                yield obs_batch, critic_observations_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, \
+                yield policy_obs_batch, proprio_obs_batch, privileged_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, \
                     old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, target_arm_torques_batch, current_arm_dof_pos_batch, current_arm_dof_vel_batch, \
                     (None, None), None
 
     # for RNNs only
     def reccurent_mini_batch_generator(self, num_mini_batches, num_epochs=8):
 
-        padded_obs_trajectories, trajectory_masks = split_and_pad_trajectories(self.observations, self.dones)
+        padded_policy_obs_trajectories, trajectory_masks = split_and_pad_trajectories(self.policy_observations, self.dones)
+        
+        if self.proprio_observations is not None:
+            padded_proprio_obs_trajectories, _ = split_and_pad_trajectories(self.proprio_observations, self.dones)
+        else:
+            padded_proprio_obs_trajectories = None
+            
         if self.privileged_observations is not None: 
-            padded_critic_obs_trajectories, _ = split_and_pad_trajectories(self.privileged_observations, self.dones)
+            padded_privileged_obs_trajectories, _ = split_and_pad_trajectories(self.privileged_observations, self.dones)
         else: 
-            padded_critic_obs_trajectories = padded_obs_trajectories
+            padded_privileged_obs_trajectories = None
 
         mini_batch_size = self.num_envs // num_mini_batches
         for ep in range(num_epochs):
@@ -233,8 +249,9 @@ class RolloutStorage:
                 last_traj = first_traj + trajectories_batch_size
                 
                 masks_batch = trajectory_masks[:, first_traj:last_traj]
-                obs_batch = padded_obs_trajectories[:, first_traj:last_traj]
-                critic_obs_batch = padded_critic_obs_trajectories[:, first_traj:last_traj]
+                policy_obs_batch = padded_policy_obs_trajectories[:, first_traj:last_traj]
+                proprio_obs_batch = padded_proprio_obs_trajectories[:, first_traj:last_traj] if padded_proprio_obs_trajectories is not None else None
+                privileged_obs_batch = padded_privileged_obs_trajectories[:, first_traj:last_traj] if padded_privileged_obs_trajectories is not None else None
 
                 actions_batch = self.actions[:, start:stop]
                 old_mu_batch = self.mu[:, start:stop]
@@ -256,7 +273,7 @@ class RolloutStorage:
                 hid_a_batch = hid_a_batch[0] if len(hid_a_batch)==1 else hid_a_batch
                 hid_c_batch = hid_c_batch[0] if len(hid_c_batch)==1 else hid_a_batch
 
-                yield obs_batch, critic_obs_batch, actions_batch, values_batch, advantages_batch, returns_batch, \
+                yield policy_obs_batch, proprio_obs_batch, privileged_obs_batch, actions_batch, values_batch, advantages_batch, returns_batch, \
                        old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (hid_a_batch, hid_c_batch), masks_batch
                 
                 first_traj = last_traj

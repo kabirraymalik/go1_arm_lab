@@ -8,7 +8,7 @@ import random
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from go1_arm_lab.tasks.manager_based.widowgo1.config.rsl_rl_ppo_cfg import Widowgo1RslRlOnPolicyRunnerCfg
+    from lab_play.tasks.manager_based.widowgo1.config.rsl_rl_ppo_cfg import Widowgo1RslRlOnPolicyRunnerCfg
 
 def add_rsl_rl_args(parser: argparse.ArgumentParser):
     """Add RSL-RL arguments to the parser.

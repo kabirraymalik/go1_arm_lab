@@ -13,7 +13,7 @@ class ManagerRLEnv(ManagerBasedRLEnv):
     def load_managers(self):
         super().load_managers()
         self.reward_manager = local_manager.RewardManager(self.cfg.rewards, self)
-        # self.observation_manager = local_manager.ObservationManager(self.cfg.observations, self)
+        self.observation_manager = local_manager.ObservationManager(self.cfg.observations, self)
 
     def step(self, action) :
         self.action_manager.process_action(action.to(self.device))
@@ -47,7 +47,10 @@ class ManagerRLEnv(ManagerBasedRLEnv):
         self.reset_terminated = self.termination_manager.terminated
         self.reset_time_outs = self.termination_manager.time_outs
         # -- reward computation
-        self.reward_buf, self.arm_reward_buf = self.reward_manager.compute(dt=self.step_dt)
+        self.reward_buf, arm_reward_buf = self.reward_manager.compute(dt=self.step_dt)
+        
+        # Store arm reward in extras for downstream processing
+        self.extras["arm_reward"] = arm_reward_buf
 
         # -- reset envs that terminated/timed-out and log the episode information
         reset_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
@@ -67,5 +70,5 @@ class ManagerRLEnv(ManagerBasedRLEnv):
         # note: done after reset to get the correct observations for reset envs
         self.obs_buf = self.observation_manager.compute(update_history=True)
 
-        # return observations, rewards, resets and extras
-        return self.obs_buf, self.reward_buf, self.arm_reward_buf, self.reset_terminated, self.reset_time_outs, self.extras
+        # return observations, rewards, resets and extras (standard interface)
+        return self.obs_buf, self.reward_buf, self.reset_terminated, self.reset_time_outs, self.extras

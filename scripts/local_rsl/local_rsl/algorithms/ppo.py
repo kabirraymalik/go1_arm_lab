@@ -1,33 +1,3 @@
-# SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: BSD-3-Clause
-# 
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# 1. Redistributions of source code must retain the above copyright notice, this
-# list of conditions and the following disclaimer.
-#
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-# this list of conditions and the following disclaimer in the documentation
-# and/or other materials provided with the distribution.
-#
-# 3. Neither the name of the copyright holder nor the names of its
-# contributors may be used to endorse or promote products derived from
-# this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# Copyright (c) 2021 ETH Zurich, Nikita Rudin
-
 from time import time
 import torch
 import torch.nn as nn
@@ -61,6 +31,9 @@ class PPO:
                  dagger_update_freq=20,
                  priv_reg_coef_schedual = [0, 0, 0],
                  eps = 1e-5,
+                 normalize_advantage_per_mini_batch=False,
+                 rnd_cfg=None,
+                 symmetry_cfg=None,
                  ):
 
         self.device = device
@@ -68,6 +41,9 @@ class PPO:
         self.desired_kl = desired_kl
         self.schedule = schedule
         self.learning_rate = learning_rate
+        self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        self.rnd_cfg = rnd_cfg
+        self.symmetry_cfg = symmetry_cfg
 
         # PPO components
         self.actor_critic = actor_critic
@@ -104,8 +80,8 @@ class PPO:
         else:
             self.arm_fk = self.arm_fk_fixed_gains
 
-    def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
-        self.storage = RolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device)
+    def init_storage(self, num_envs, num_transitions_per_env, policy_obs_shape, proprio_obs_shape, privileged_obs_shape, action_shape):
+        self.storage = RolloutStorage(num_envs, num_transitions_per_env, policy_obs_shape, proprio_obs_shape, privileged_obs_shape, action_shape, self.device)
 
 
     def test_mode(self):
@@ -114,20 +90,39 @@ class PPO:
     def train_mode(self):
         self.actor_critic.train()
 
-    def act(self, obs, critic_obs, hist_encoding=False):
+    def act(self, policy_obs, proprio_obs, privileged_obs, hist_encoding=False):
         '''
         if self.actor_critic.is_recurrent:
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
         '''
         # Compute the actions and values
-        self.transition.actions = self.actor_critic.act(obs, hist_encoding).detach()
+        # For actor: use policy_obs (which contains both current proprio and history)
+        # For critic: concatenate proprio (or policy) with privileged obs
+        # Critic expects: [prop_obs, priv_obs]
+        if privileged_obs is not None:
+            # Use proprio if available, otherwise use policy
+            prop_obs = proprio_obs if proprio_obs is not None else policy_obs
+            critic_obs = torch.cat([prop_obs, privileged_obs], dim=-1)
+        else:
+            # No privileged obs, just use policy or proprio
+            critic_obs = proprio_obs if proprio_obs is not None else policy_obs
+        
+        # Concatenate policy and privileged obs for actor if needed
+        # Actor expects [policy_obs_with_history, privileged_obs]
+        if privileged_obs is not None:
+            actor_obs = torch.cat([policy_obs, privileged_obs], dim=-1)
+        else:
+            actor_obs = policy_obs
+        
+        self.transition.actions = self.actor_critic.act(actor_obs, hist_encoding).detach()
         self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.actor_critic.action_mean.detach()
         self.transition.action_sigma = self.actor_critic.action_std.detach()
-        # need to record obs and critic_obs before env.step()
-        self.transition.observations = obs
-        self.transition.critic_observations = critic_obs
+        # need to record obs before env.step()
+        self.transition.policy_observations = policy_obs
+        self.transition.proprio_observations = proprio_obs
+        self.transition.privileged_observations = privileged_obs
         return self.transition.actions
     
     def process_env_step(self, rewards, arm_rewards, dones, infos):
@@ -149,8 +144,14 @@ class PPO:
         self.transition.clear()
         self.actor_critic.reset(dones)
     
-    def compute_returns(self, last_critic_obs):
-        last_values= self.actor_critic.evaluate(last_critic_obs).detach()
+    def compute_returns(self, last_policy_obs, last_proprio_obs, last_privileged_obs):
+        # Critic expects: [prop_obs, priv_obs]
+        if last_privileged_obs is not None:
+            prop_obs = last_proprio_obs if last_proprio_obs is not None else last_policy_obs
+            last_critic_obs = torch.cat([prop_obs, last_privileged_obs], dim=-1)
+        else:
+            last_critic_obs = last_proprio_obs if last_proprio_obs is not None else last_policy_obs
+        last_values = self.actor_critic.evaluate(last_critic_obs).detach()
         self.storage.compute_returns(last_values, self.gamma, self.lam)
 
     def update(self):
@@ -165,19 +166,34 @@ class PPO:
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
             
-        for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
+        for policy_obs_batch, proprio_obs_batch, privileged_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
             old_mu_batch, old_sigma_batch, target_arm_torques, current_arm_dof_pos, current_arm_dof_vel, hid_states_batch, masks_batch in generator:
-                self.actor_critic.act(obs_batch, hist_encoding=False, masks=masks_batch, hidden_states=hid_states_batch[0])
+                # Concatenate policy and privileged obs for actor if needed
+                if privileged_obs_batch is not None:
+                    actor_obs_batch = torch.cat([policy_obs_batch, privileged_obs_batch], dim=-1)
+                else:
+                    actor_obs_batch = policy_obs_batch
+                
+                # Use concatenated obs for actor
+                self.actor_critic.act(actor_obs_batch, hist_encoding=False, masks=masks_batch, hidden_states=hid_states_batch[0])
                 actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
+                
+                # Critic expects: [prop_obs, priv_obs]
+                if privileged_obs_batch is not None:
+                    prop_obs_batch = proprio_obs_batch if proprio_obs_batch is not None else policy_obs_batch
+                    critic_obs_batch = torch.cat([prop_obs_batch, privileged_obs_batch], dim=-1)
+                else:
+                    critic_obs_batch = proprio_obs_batch if proprio_obs_batch is not None else policy_obs_batch
                 value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
                 mu_batch = self.actor_critic.action_mean
                 sigma_batch = self.actor_critic.action_std
                 entropy_batch = self.actor_critic.entropy
 
                 # Adaptation module update
-                priv_latent_batch = self.actor_critic.actor.infer_priv_latent(obs_batch)
+                # Use the same concatenated obs
+                priv_latent_batch = self.actor_critic.actor.infer_priv_latent(actor_obs_batch)
                 with torch.inference_mode():
-                    hist_latent_batch = self.actor_critic.actor.infer_hist_latent(obs_batch)
+                    hist_latent_batch = self.actor_critic.actor.infer_hist_latent(actor_obs_batch)
                 priv_reg_loss = (priv_latent_batch - hist_latent_batch.detach()).norm(p=2, dim=1).mean()
                 priv_reg_stage = min(max((self.counter - self.priv_reg_coef_schedual[2]), 0) / self.priv_reg_coef_schedual[3], 1)
                 priv_reg_coef = priv_reg_stage * (self.priv_reg_coef_schedual[1] - self.priv_reg_coef_schedual[0]) + self.priv_reg_coef_schedual[0]
@@ -276,16 +292,23 @@ class PPO:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
-        for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
+        for policy_obs_batch, proprio_obs_batch, privileged_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
             old_mu_batch, old_sigma_batch, target_arm_torques, current_arm_dof_pos, current_arm_dof_vel, hid_states_batch, masks_batch in generator:
-                # print('obs_batch_updatedagger', obs_batch.shape)
+                # Adaptation module update for Dagger training
+                # Construct full obs: [policy_obs, privileged_obs] for latent extraction
+                if privileged_obs_batch is not None:
+                    full_obs_batch = torch.cat([policy_obs_batch, privileged_obs_batch], dim=-1)
+                else:
+                    full_obs_batch = policy_obs_batch
+                
+                # Extract latents from full obs
                 with torch.inference_mode():
-                    self.actor_critic.act(obs_batch, hist_encoding=True, masks=masks_batch, hidden_states=hid_states_batch[0])
-
-                # Adaptation module update
-                with torch.inference_mode():
-                    priv_latent_batch = self.actor_critic.actor.infer_priv_latent(obs_batch)
-                hist_latent_batch = self.actor_critic.actor.infer_hist_latent(obs_batch)
+                    # Extract privileged latent (target, from privileged part)
+                    priv_latent_batch = self.actor_critic.actor.infer_priv_latent(full_obs_batch)
+                # Extract history latent (learning, from history part)
+                hist_latent_batch = self.actor_critic.actor.infer_hist_latent(full_obs_batch)
+                
+                # Train history encoder to mimic privileged encoder
                 hist_latent_loss = (priv_latent_batch.detach() - hist_latent_batch).norm(p=2, dim=1).mean()
                 self.hist_encoder_optimizer.zero_grad()
                 hist_latent_loss.backward()

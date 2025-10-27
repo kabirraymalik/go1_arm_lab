@@ -63,7 +63,9 @@ class ObservationManager(ObservationManagerBase):
         # Compute metadata for interleaving
         self._interleave_metadata: dict[str, dict] = {}
         self._compute_interleave_metadata()
-        print(" ---- Local ObservationManager initialized ----")
+        print("[INFO] Local Observation Manager:")
+        # Print detailed information about observation manager
+        print(self)
         
     def _compute_interleave_metadata(self):
         """Analyze observation groups and compute metadata for interleaving.

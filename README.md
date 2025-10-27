@@ -7,7 +7,7 @@ python scripts/local_rsl/train.py --task=Isaac-Flat-widowgo1 --headless --logger
 ```
 Play
 ```
-python scripts/local_rsl/train.py --task=Isaac-Flat-widowgo1-Play
+python scripts/local_rsl/play.py --task=Isaac-Flat-widowgo1-Play
 ```
 ## 📦 Installation
 
