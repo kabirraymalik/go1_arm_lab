@@ -12,7 +12,7 @@ from .agents import rsl_rl_ppo_cfg
 
 gym.register(
     id="Isaac-Flat-widowgo1",
-    entry_point="lab_play.tasks.manager_based.widowgo1.manager_env:ManagerRLEnv",
+    entry_point="go1_arm_lab.tasks.manager_based.widowgo1.manager_env:ManagerRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": flat_env_cfg.widowgo1FlatEnvCfg,
@@ -22,7 +22,7 @@ gym.register(
 
 gym.register(
     id="Isaac-Flat-widowgo1-Play",
-    entry_point="lab_play.tasks.manager_based.widowgo1.manager_env:ManagerRLEnv",
+    entry_point="go1_arm_lab.tasks.manager_based.widowgo1.manager_env:ManagerRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": flat_env_cfg.widowgo1FlatEnvCfg_PLAY,
